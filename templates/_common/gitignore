@@ -1,0 +1,36 @@
+# Secrets — JAMAIS dans le repo
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.age
+secrets/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Node
+node_modules/
+dist/
+.npm
+
+# Rust
+target/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Solidity
+out/
+cache/
+broadcast/

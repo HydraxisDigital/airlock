@@ -1,0 +1,12 @@
+{
+  "id": "rust",
+  "label": "Rust",
+  "vscode_extensions": [
+    "rust-lang.rust-analyzer",
+    "tamasfe.even-better-toml",
+    "vadimcn.vscode-lldb"
+  ],
+  "audit_command": "cargo audit && cargo deny check",
+  "tree_command": "cargo tree",
+  "remote_env": {}
+}

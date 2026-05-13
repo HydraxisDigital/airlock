@@ -1,0 +1,14 @@
+{
+  "id": "typescript",
+  "label": "TypeScript / Node.js (pnpm)",
+  "vscode_extensions": [
+    "dbaeumer.vscode-eslint",
+    "socket.vscode-socket-security",
+    "esbenp.prettier-vscode"
+  ],
+  "audit_command": "pnpm audit",
+  "tree_command": "pnpm ls --depth=Infinity",
+  "remote_env": {
+    "NODE_ENV": "development"
+  }
+}

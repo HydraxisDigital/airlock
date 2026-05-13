@@ -1,0 +1,15 @@
+{
+  "id": "python",
+  "label": "Python (uv)",
+  "vscode_extensions": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "charliermarsh.ruff"
+  ],
+  "audit_command": "uv pip list --outdated",
+  "tree_command": "uv tree",
+  "remote_env": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUNBUFFERED": "1"
+  }
+}

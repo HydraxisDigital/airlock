@@ -1,0 +1,34 @@
+# Security — ${PROJECT_NAME}
+
+This project uses an isolated development environment via Dev Containers.
+
+## Rules
+
+1. **Never install dependencies outside the container**
+2. **Verify every new dependency** before adding it:
+   - Who is the maintainer? Has it changed recently?
+   - How many transitive dependencies?
+   - Does the published code match the GitHub repo?
+3. **Secrets are in `/run/secrets/env`** (read-only)
+   - Never in global environment variables
+   - Never in source code
+   - Never in the `.env` at the project root
+
+## Audit commands
+
+```bash
+${AUDIT_COMMAND}
+```
+
+## Dependency tree
+
+```bash
+${TREE_COMMAND}
+```
+
+## When in doubt about a dependency
+
+1. Check on [Socket.dev](https://socket.dev)
+2. Compare published code with the source repo
+3. Look at recent issues/PRs for warning signals
+4. As a last resort, fork and audit manually

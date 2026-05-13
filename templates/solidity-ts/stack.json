@@ -1,0 +1,14 @@
+{
+  "id": "solidity-ts",
+  "label": "Solidity + TypeScript (Foundry + pnpm)",
+  "vscode_extensions": [
+    "NomicFoundation.hardhat-solidity",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode"
+  ],
+  "audit_command": "pnpm audit",
+  "tree_command": "pnpm ls --depth=Infinity && forge tree",
+  "remote_env": {
+    "NODE_ENV": "development"
+  }
+}

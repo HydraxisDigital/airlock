@@ -1,0 +1,10 @@
+{
+  "id": "solidity",
+  "label": "Solidity (Foundry)",
+  "vscode_extensions": [
+    "NomicFoundation.hardhat-solidity"
+  ],
+  "audit_command": "# Pas de dépendances npm — surface réduite",
+  "tree_command": "forge tree",
+  "remote_env": {}
+}

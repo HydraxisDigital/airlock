@@ -1,0 +1,8 @@
+{
+  "id": "minimal",
+  "label": "Minimal (base Ubuntu)",
+  "vscode_extensions": [],
+  "audit_command": "# Pas de gestionnaire de paquets spécifique",
+  "tree_command": "# N/A",
+  "remote_env": {}
+}
