@@ -1,8 +1,10 @@
 pub mod cli;
+pub mod detect;
 pub mod devcontainer;
 pub mod git;
 pub mod paths;
 pub mod prerequisites;
+pub mod retrofit;
 pub mod scaffold;
 pub mod secrets;
 pub mod stack;

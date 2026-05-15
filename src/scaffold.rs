@@ -16,9 +16,7 @@ pub struct ScaffoldOptions {
 
 pub fn run(paths: &ProjectPaths, stack: &StackMeta, opts: &ScaffoldOptions) -> Result<()> {
     create_dirs(paths)?;
-    write_dockerfile(paths, stack)?;
-    devcontainer::write(paths, stack, opts.needs_secrets)?;
-    write_post_create(paths, stack)?;
+    write_devcontainer_files(paths, stack, opts.needs_secrets)?;
     write_gitignore(paths)?;
     write_security_md(paths, stack)?;
 
@@ -36,6 +34,18 @@ pub fn run(paths: &ProjectPaths, stack: &StackMeta, opts: &ScaffoldOptions) -> R
         open_vscode(paths)?;
     }
 
+    Ok(())
+}
+
+pub(crate) fn write_devcontainer_files(
+    paths: &ProjectPaths,
+    stack: &StackMeta,
+    needs_secrets: bool,
+) -> Result<()> {
+    fs::create_dir_all(paths.dir.join(".devcontainer"))?;
+    write_dockerfile(paths, stack)?;
+    devcontainer::write(paths, stack, needs_secrets)?;
+    write_post_create(paths, stack)?;
     Ok(())
 }
 
@@ -133,7 +143,7 @@ fn print_summary(paths: &ProjectPaths, _stack: &StackMeta, opts: &ScaffoldOption
     println!();
 }
 
-fn open_vscode(paths: &ProjectPaths) -> Result<()> {
+pub(crate) fn open_vscode(paths: &ProjectPaths) -> Result<()> {
     println!("\n{}", style("── Opening in VS Code ──").bold().cyan());
     println!("  VS Code will open and offer 'Reopen in Container'");
     println!("  Accept to launch the isolated container via OrbStack");

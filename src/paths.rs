@@ -31,6 +31,81 @@ impl ProjectPaths {
             secret_file,
         })
     }
+
+    pub fn for_existing(dir: PathBuf, secrets_dir: &Path, uuid: &str) -> Result<Self> {
+        if !dir.exists() {
+            bail!("Path does not exist: {}", dir.display());
+        }
+        if !dir.is_dir() {
+            bail!("Path is not a directory: {}", dir.display());
+        }
+
+        let raw_name = dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                anyhow::anyhow!("Cannot derive project name from path: {}", dir.display())
+            })?;
+
+        let base_slug = slugify(&raw_name);
+        if base_slug.is_empty() {
+            bail!(
+                "Directory name does not produce a valid slug: '{}'",
+                raw_name
+            );
+        }
+
+        Self::for_existing_with_slug(dir, secrets_dir, uuid, &base_slug)
+    }
+
+    pub fn for_existing_with_slug(
+        dir: PathBuf,
+        secrets_dir: &Path,
+        uuid: &str,
+        base_slug: &str,
+    ) -> Result<Self> {
+        if !dir.exists() {
+            bail!("Path does not exist: {}", dir.display());
+        }
+        if !dir.is_dir() {
+            bail!("Path is not a directory: {}", dir.display());
+        }
+        if base_slug.is_empty() {
+            bail!("Base slug must not be empty");
+        }
+
+        let full = format!("{}-{}", uuid, base_slug);
+        let secret_file = secrets_dir.join(&full).join("env");
+
+        Ok(Self {
+            name: full.clone(),
+            slug: full,
+            dir,
+            secret_file,
+        })
+    }
+}
+
+pub fn new_uuid() -> String {
+    let s = uuid::Uuid::new_v4().simple().to_string();
+    s[..4].to_string()
+}
+
+pub fn slug_for_subdir(parent_dir: &Path, subdir_name: &str) -> String {
+    let parent = parent_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("project");
+    let parent_slug = slugify(parent);
+    let sub_slug = slugify(subdir_name);
+    if parent_slug.is_empty() {
+        sub_slug
+    } else if sub_slug.is_empty() {
+        parent_slug
+    } else {
+        format!("{}-{}", parent_slug, sub_slug)
+    }
 }
 
 pub fn slugify(input: &str) -> String {
@@ -155,5 +230,33 @@ mod tests {
     #[test]
     fn expand_tilde_relative_unchanged() {
         assert_eq!(expand_tilde("./foo"), PathBuf::from("./foo"));
+    }
+
+    #[test]
+    fn new_uuid_format() {
+        let u = new_uuid();
+        assert_eq!(u.len(), 4);
+        assert!(
+            u.chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "expected 4 lowercase hex chars, got: {}",
+            u
+        );
+    }
+
+    #[test]
+    fn slug_for_subdir_basic() {
+        assert_eq!(
+            slug_for_subdir(Path::new("/tmp/My Project"), "backend"),
+            "my-project-backend"
+        );
+    }
+
+    #[test]
+    fn slug_for_subdir_preserves_subdir() {
+        assert_eq!(
+            slug_for_subdir(Path::new("/some/where/crm"), "frontend"),
+            "crm-frontend"
+        );
     }
 }
