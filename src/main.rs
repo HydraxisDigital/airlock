@@ -7,7 +7,7 @@ use console::style;
 use airlock::cli;
 use airlock::paths::{default_projects_dir, default_secrets_dir, expand_tilde, ProjectPaths};
 use airlock::scaffold::ScaffoldOptions;
-use airlock::{prerequisites, scaffold, stack};
+use airlock::{prerequisites, retrofit, scaffold, stack};
 
 #[derive(Parser)]
 #[command(
@@ -52,6 +52,32 @@ enum Commands {
         /// Create the project inside this directory (will contain <slug>/)
         #[arg(long, value_name = "DIR", conflicts_with = "global")]
         path: Option<PathBuf>,
+    },
+
+    /// Apply airlock devcontainer config to an existing project
+    Retrofit {
+        /// Project directory (default: current directory)
+        path: Option<PathBuf>,
+
+        /// Force the stack (skip auto-detection)
+        #[arg(long, short)]
+        stack: Option<String>,
+
+        /// Enable secrets migration and mount
+        #[arg(long, conflicts_with = "no_secrets")]
+        secrets: bool,
+
+        /// Disable secrets (useful in non-interactive mode)
+        #[arg(long, conflicts_with = "secrets")]
+        no_secrets: bool,
+
+        /// Overwrite an existing .devcontainer/
+        #[arg(long)]
+        force: bool,
+
+        /// Do not open VS Code after setup
+        #[arg(long)]
+        no_vscode: bool,
     },
 
     /// List available stacks
@@ -117,6 +143,48 @@ fn main() -> Result<()> {
             };
 
             scaffold::run(&paths, &config.stack, &opts)?;
+        }
+
+        Commands::Retrofit {
+            path,
+            stack,
+            secrets,
+            no_secrets,
+            force,
+            no_vscode: _,
+        } => {
+            prerequisites::check()?;
+
+            let project_dir = match path {
+                Some(p) => {
+                    let s = p.to_string_lossy().into_owned();
+                    expand_tilde(&s)
+                }
+                None => std::env::current_dir()?,
+            }
+            .canonicalize()?;
+
+            let secrets_opt = if secrets {
+                Some(true)
+            } else if no_secrets {
+                Some(false)
+            } else {
+                None
+            };
+
+            let secrets_dir = default_secrets_dir();
+
+            let args = cli::RetrofitArgs {
+                stack,
+                secrets: secrets_opt,
+                force,
+                project_dir: project_dir.clone(),
+                secrets_dir: secrets_dir.clone(),
+            };
+
+            let targets = cli::gather_retrofit_targets(args)?;
+            let outcomes = retrofit::run_many(targets, force)?;
+            cli::print_retrofit_outcomes(&outcomes);
         }
 
         Commands::Stacks => {
