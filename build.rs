@@ -54,5 +54,60 @@ fn main() {
                 field
             );
         }
+
+        if let Some(lv) = val.get("language_version") {
+            for field in &["name", "token", "default", "supported"] {
+                assert!(
+                    lv.get(field).is_some(),
+                    "templates/{}/stack.json : language_version.{} manquant",
+                    name,
+                    field
+                );
+            }
+            let token = lv.get("token").and_then(|v| v.as_str()).unwrap_or_else(|| {
+                panic!(
+                    "templates/{}/stack.json : language_version.token doit être une string",
+                    name
+                )
+            });
+
+            let dockerfile_path = path.join("Dockerfile");
+            let dockerfile = fs::read_to_string(&dockerfile_path)
+                .unwrap_or_else(|_| panic!("Impossible de lire templates/{}/Dockerfile", name));
+            let placeholder = format!("__{}__", token);
+            assert!(
+                dockerfile.contains(&placeholder),
+                "templates/{}/Dockerfile : placeholder '{}' attendu mais introuvable",
+                name,
+                placeholder
+            );
+
+            let default = lv
+                .get("default")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "templates/{}/stack.json : language_version.default doit être une string",
+                        name
+                    )
+                });
+            let supported = lv
+                .get("supported")
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "templates/{}/stack.json : language_version.supported doit être un array",
+                        name
+                    )
+                });
+            assert!(
+                supported
+                    .iter()
+                    .any(|v| v.get("version").and_then(|x| x.as_str()) == Some(default)),
+                "templates/{}/stack.json : default '{}' absent de supported",
+                name,
+                default
+            );
+        }
     }
 }

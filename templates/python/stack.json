@@ -11,5 +11,16 @@
   "remote_env": {
     "PYTHONDONTWRITEBYTECODE": "1",
     "PYTHONUNBUFFERED": "1"
+  },
+  "language_version": {
+    "name": "python",
+    "token": "PYTHON_VERSION",
+    "default": "3.12",
+    "supported": [
+      { "version": "3.10" },
+      { "version": "3.11" },
+      { "version": "3.12" },
+      { "version": "3.13" }
+    ]
   }
 }

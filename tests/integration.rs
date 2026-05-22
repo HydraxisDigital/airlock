@@ -12,7 +12,8 @@ fn scaffold_stack(stack_id: &str) -> (TempDir, std::path::PathBuf) {
     let name = format!("test-{}", stack_id);
     let paths = airlock::paths::ProjectPaths::new(&name, &projects_dir, &secrets_dir).unwrap();
 
-    let stack = airlock::stack::StackRegistry::get(stack_id).unwrap();
+    let stack =
+        airlock::stack::StackChoice::new(airlock::stack::StackRegistry::get(stack_id).unwrap());
     let opts = airlock::scaffold::ScaffoldOptions {
         needs_secrets: false,
         init_git: false,
@@ -21,6 +22,29 @@ fn scaffold_stack(stack_id: &str) -> (TempDir, std::path::PathBuf) {
 
     airlock::scaffold::run(&paths, &stack, &opts).unwrap();
 
+    let project_dir = paths.dir.clone();
+    (tmp, project_dir)
+}
+
+fn scaffold_stack_with_version(stack_id: &str, version: &str) -> (TempDir, std::path::PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let projects_dir = tmp.path().join("Projects");
+    let secrets_dir = tmp.path().join("secrets");
+    std::fs::create_dir_all(&projects_dir).unwrap();
+    std::fs::create_dir_all(&secrets_dir).unwrap();
+
+    let name = format!("test-{}-{}", stack_id, version);
+    let paths = airlock::paths::ProjectPaths::new(&name, &projects_dir, &secrets_dir).unwrap();
+    let stack = airlock::stack::StackChoice::with_version(
+        airlock::stack::StackRegistry::get(stack_id).unwrap(),
+        Some(version.to_string()),
+    );
+    let opts = airlock::scaffold::ScaffoldOptions {
+        needs_secrets: false,
+        init_git: false,
+        open_vscode: false,
+    };
+    airlock::scaffold::run(&paths, &stack, &opts).unwrap();
     let project_dir = paths.dir.clone();
     (tmp, project_dir)
 }
@@ -35,6 +59,15 @@ fn assert_required_files(project_dir: &Path) {
     ] {
         assert!(project_dir.join(file).exists(), "Missing file: {}", file);
     }
+
+    // The app shell must exist and stay empty: generators like create-next-app
+    // refuse to run in a non-empty directory.
+    let project = project_dir.join("project");
+    assert!(project.is_dir(), "Missing project/ directory");
+    assert!(
+        std::fs::read_dir(&project).unwrap().next().is_none(),
+        "project/ must be empty"
+    );
 }
 
 fn assert_valid_json(project_dir: &Path, file: &str) {
@@ -77,6 +110,18 @@ fn test_typescript_stack() {
         !dockerfile.contains("RUN npm"),
         "Should not use old npm commands"
     );
+    assert!(
+        !dockerfile.contains("__NODE_VERSION__"),
+        "placeholder must be substituted"
+    );
+    let stack = airlock::stack::StackRegistry::get("typescript").unwrap();
+    let default = stack.language_version.as_ref().unwrap().default.clone();
+    assert!(
+        dockerfile.contains(&format!("typescript-node:{}", default)),
+        "Dockerfile should pin default node version {}: {}",
+        default,
+        dockerfile
+    );
 
     let json_content =
         std::fs::read_to_string(dir.join(".devcontainer/devcontainer.json")).unwrap();
@@ -87,6 +132,35 @@ fn test_typescript_stack() {
         .as_array()
         .unwrap()
         .contains(&serde_json::json!("--cap-drop=ALL")));
+}
+
+#[test]
+fn test_javascript_stack() {
+    let (_tmp, dir) = scaffold_stack("javascript");
+    assert_required_files(&dir);
+    assert_valid_json(&dir, ".devcontainer/devcontainer.json");
+
+    let dockerfile = std::fs::read_to_string(dir.join(".devcontainer/Dockerfile")).unwrap();
+    assert!(dockerfile.contains("pnpm"), "Dockerfile should use pnpm");
+    assert!(dockerfile.contains("corepack"), "Should use corepack");
+    assert!(
+        !dockerfile.contains("__NODE_VERSION__"),
+        "placeholder must be substituted"
+    );
+    let stack = airlock::stack::StackRegistry::get("javascript").unwrap();
+    let default = stack.language_version.as_ref().unwrap().default.clone();
+    assert!(
+        dockerfile.contains(&format!("javascript-node:{}", default)),
+        "Dockerfile should pin default node version {}: {}",
+        default,
+        dockerfile
+    );
+
+    let json_content =
+        std::fs::read_to_string(dir.join(".devcontainer/devcontainer.json")).unwrap();
+    let json_start = json_content.find('{').unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json_content[json_start..]).unwrap();
+    assert_eq!(v["name"], "test-javascript");
 }
 
 #[test]
@@ -141,6 +215,144 @@ fn test_solidity_ts_stack() {
     assert!(
         dockerfile.contains("foundry-rs/foundry"),
         "Should include Foundry"
+    );
+}
+
+#[test]
+fn test_typescript_explicit_node_version() {
+    let (_tmp, dir) = scaffold_stack_with_version("typescript", "20");
+    let dockerfile = std::fs::read_to_string(dir.join(".devcontainer/Dockerfile")).unwrap();
+    assert!(
+        dockerfile.contains("typescript-node:20"),
+        "explicit node 20 should be pinned: {}",
+        dockerfile
+    );
+    assert!(
+        !dockerfile.contains("__NODE_VERSION__"),
+        "placeholder must be substituted"
+    );
+}
+
+#[test]
+fn test_python_explicit_version() {
+    let (_tmp, dir) = scaffold_stack_with_version("python", "3.13");
+    let dockerfile = std::fs::read_to_string(dir.join(".devcontainer/Dockerfile")).unwrap();
+    assert!(
+        dockerfile.contains("python:3.13"),
+        "explicit python 3.13 should be pinned: {}",
+        dockerfile
+    );
+}
+
+#[test]
+fn test_rust_explicit_version() {
+    let (_tmp, dir) = scaffold_stack_with_version("rust", "1.83");
+    let dockerfile = std::fs::read_to_string(dir.join(".devcontainer/Dockerfile")).unwrap();
+    assert!(
+        dockerfile.contains("devcontainers/rust:1.83"),
+        "explicit rust 1.83 should be pinned: {}",
+        dockerfile
+    );
+}
+
+#[test]
+fn test_minimal_stack_has_no_language_version() {
+    let stack = airlock::stack::StackRegistry::get("minimal").unwrap();
+    assert!(stack.language_version.is_none());
+}
+
+#[test]
+fn test_solidity_stack_has_no_language_version() {
+    let stack = airlock::stack::StackRegistry::get("solidity").unwrap();
+    assert!(stack.language_version.is_none());
+}
+
+#[test]
+fn test_supported_contains_default_per_stack() {
+    for stack_id in &["typescript", "javascript", "python", "rust", "solidity-ts"] {
+        let stack = airlock::stack::StackRegistry::get(stack_id).unwrap();
+        let lv = stack
+            .language_version
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} should declare language_version", stack_id));
+        assert!(
+            lv.supports(&lv.default),
+            "{}: default {} not in supported {:?}",
+            stack_id,
+            lv.default,
+            lv.versions()
+        );
+    }
+}
+
+#[test]
+fn test_detect_node_version_from_nvmrc() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".nvmrc"), "v22.1.0\n").unwrap();
+    assert_eq!(
+        airlock::detect::detect_language_version(tmp.path(), "node"),
+        Some("22".to_string())
+    );
+}
+
+#[test]
+fn test_detect_node_version_from_engines() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("package.json"),
+        r#"{"engines": {"node": ">=20.0.0"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        airlock::detect::detect_language_version(tmp.path(), "node"),
+        Some("20".to_string())
+    );
+}
+
+#[test]
+fn test_detect_python_version_from_pyproject() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("pyproject.toml"),
+        "[project]\nrequires-python = \">=3.11\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        airlock::detect::detect_language_version(tmp.path(), "python"),
+        Some("3.11".to_string())
+    );
+}
+
+#[test]
+fn test_detect_python_version_from_python_version_file() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".python-version"), "3.12.4\n").unwrap();
+    assert_eq!(
+        airlock::detect::detect_language_version(tmp.path(), "python"),
+        Some("3.12".to_string())
+    );
+}
+
+#[test]
+fn test_detect_rust_version_from_toolchain_toml() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("rust-toolchain.toml"),
+        "[toolchain]\nchannel = \"1.82\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        airlock::detect::detect_language_version(tmp.path(), "rust"),
+        Some("1.82".to_string())
+    );
+}
+
+#[test]
+fn test_detect_returns_none_when_no_indicator() {
+    let tmp = TempDir::new().unwrap();
+    assert_eq!(
+        airlock::detect::detect_language_version(tmp.path(), "node"),
+        None
     );
 }
 
@@ -212,7 +424,8 @@ fn single_target(
     let paths =
         airlock::paths::ProjectPaths::for_existing(project_dir.to_path_buf(), secrets_dir, &uuid)
             .unwrap();
-    let stack = airlock::stack::StackRegistry::get(stack_id).unwrap();
+    let stack =
+        airlock::stack::StackChoice::new(airlock::stack::StackRegistry::get(stack_id).unwrap());
     airlock::retrofit::RetrofitTarget {
         paths,
         stack,
@@ -258,7 +471,7 @@ fn test_retrofit_minimal_dir() {
     assert!(project_dir.join(".devcontainer/post-create.sh").exists());
     assert!(project_dir.join("SECURITY.md").exists());
     assert!(project_dir.join(".gitignore").exists());
-    assert!(!project_dir.join("src").exists());
+    assert!(!project_dir.join("project").exists());
     assert!(!project_dir.join(".git").exists());
 }
 
@@ -427,7 +640,8 @@ fn test_retrofit_force_preserves_uuid() {
     // Simulate the CLI flow: read existing UUID, reuse, force overwrite
     let existing_uuid = airlock::retrofit::read_existing_uuid(&dc_json)
         .expect("expected to recover UUID from existing devcontainer.json");
-    let stack = airlock::stack::StackRegistry::get("rust").unwrap();
+    let stack =
+        airlock::stack::StackChoice::new(airlock::stack::StackRegistry::get("rust").unwrap());
     let paths = airlock::paths::ProjectPaths::for_existing(
         project_dir.clone(),
         &secrets_dir,
@@ -476,7 +690,8 @@ fn test_retrofit_iterates_monorepo() {
             &base_slug,
         )
         .unwrap();
-        let stack = airlock::stack::StackRegistry::get(stack_id).unwrap();
+        let stack =
+            airlock::stack::StackChoice::new(airlock::stack::StackRegistry::get(stack_id).unwrap());
         targets.push(airlock::retrofit::RetrofitTarget {
             paths,
             stack,
@@ -541,7 +756,8 @@ fn test_retrofit_subdir_skipped_continues() {
             &base_slug,
         )
         .unwrap();
-        let stack = airlock::stack::StackRegistry::get(stack_id).unwrap();
+        let stack =
+            airlock::stack::StackChoice::new(airlock::stack::StackRegistry::get(stack_id).unwrap());
         targets.push(airlock::retrofit::RetrofitTarget {
             paths,
             stack,
@@ -580,4 +796,38 @@ fn test_detect_stack_via_module() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
     assert_eq!(airlock::detect::detect_stack(tmp.path()), Some("rust"));
+}
+
+#[test]
+fn post_create_scripts_do_not_init_projects() {
+    // The empty project/ shell is bootstrapped by the user. post-create.sh must
+    // not create any manifest at the workspace root, otherwise generators like
+    // create-next-app would refuse to run. The `! -f <manifest>` guards are the
+    // distinctive signature of the old init blocks.
+    let guards = [
+        "! -f package.json",
+        "! -f Cargo.toml",
+        "! -f pyproject.toml",
+        "! -f foundry.toml",
+    ];
+    for stack_id in [
+        "typescript",
+        "javascript",
+        "rust",
+        "python",
+        "solidity",
+        "solidity-ts",
+        "minimal",
+    ] {
+        let body =
+            airlock::stack::StackRegistry::get_file_content(stack_id, "post-create.sh").unwrap();
+        for guard in guards {
+            assert!(
+                !body.contains(guard),
+                "{} post-create.sh still guards `{}`",
+                stack_id,
+                guard
+            );
+        }
+    }
 }

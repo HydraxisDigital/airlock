@@ -1,6 +1,6 @@
-FROM mcr.microsoft.com/devcontainers/python:3.12
+FROM mcr.microsoft.com/devcontainers/python:__PYTHON_VERSION__
 
-# uv via image officielle Astral (multi-arch, pas de curl|sh)
+# uv via official Astral image (multi-arch, no curl|sh)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 USER vscode

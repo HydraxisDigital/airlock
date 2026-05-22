@@ -4,7 +4,5 @@ echo "Configuration Solidity / Foundry..."
 
 echo "  ✔ forge $(forge --version)"
 
-if [[ ! -f foundry.toml ]]; then
-    forge init --no-git --no-commit .
-    echo "  ✔ Foundry project initialised"
-fi
+# No project is initialised here: bootstrap your app in the empty project/ dir,
+# e.g. `cd project && forge init --no-git .`

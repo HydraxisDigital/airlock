@@ -87,7 +87,7 @@ airlock retrofit ./crm              # monorepo: iterate over backend/, frontend/
 ```
 
 Applies the airlock devcontainer config to a project that already exists. It
-**does not** touch git (no `init`, no commit), **does not** create a `src/`
+**does not** touch git (no `init`, no commit), **does not** create a `project/`
 folder, and **never** opens VS Code.
 
 #### Monorepos
@@ -164,9 +164,33 @@ With the `--secrets` flag, a `~/.secrets/<project-name>.env` file is mounted rea
 ```text
 <target-dir>/<project-name>/
 ├── .devcontainer/
-│   └── devcontainer.json
-└── ...                   # files for the chosen stack
+│   ├── Dockerfile
+│   ├── devcontainer.json
+│   └── post-create.sh
+├── .gitignore
+├── SECURITY.md
+└── project/             # empty shell — bootstrap your app here
 ```
 
 Where `<target-dir>` is the current directory by default, `~/Projects` with
 `-g`, or whatever you pass to `--path`.
+
+`project/` is left **empty on purpose**. airlock no longer scaffolds a
+`package.json`/`Cargo.toml`/`pyproject.toml` for you — instead you bootstrap the
+framework of your choice inside the container, in that directory. Because the
+folder is empty, generators that refuse to run in a non-empty directory (such as
+`create-next-app`) work without conflicts:
+
+```bash
+# Inside the container (Reopen in Container), then:
+cd project
+pnpm create next-app@latest . --yes      # or: cargo init . | uv init | forge init --no-git .
+```
+
+If you enabled `--secrets`, the read-only secrets are symlinked at
+`/workspace/.env` (the workspace root). To let an app living in `project/` pick
+them up, link them in **after** bootstrapping:
+
+```bash
+ln -s ../.env project/.env
+```
