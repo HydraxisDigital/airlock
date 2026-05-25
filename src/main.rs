@@ -29,7 +29,7 @@ enum Commands {
         /// Project name (optional — interactive prompt if omitted)
         name: Option<String>,
 
-        /// Tech stack (typescript, rust, python, solidity, solidity-ts, minimal)
+        /// Tech stack (typescript, javascript, rust, python, solidity, solidity-ts, minimal)
         #[arg(long, short)]
         stack: Option<String>,
 
@@ -52,6 +52,18 @@ enum Commands {
         /// Create the project inside this directory (will contain <slug>/)
         #[arg(long, value_name = "DIR", conflicts_with = "global")]
         path: Option<PathBuf>,
+
+        /// Node.js major version (typescript / javascript / solidity-ts stacks)
+        #[arg(long, value_name = "VERSION")]
+        node_version: Option<String>,
+
+        /// Python version, e.g. 3.12 (python stack)
+        #[arg(long, value_name = "VERSION")]
+        python_version: Option<String>,
+
+        /// Rust version (rust stack)
+        #[arg(long, value_name = "VERSION")]
+        rust_version: Option<String>,
     },
 
     /// Apply airlock devcontainer config to an existing project
@@ -78,6 +90,18 @@ enum Commands {
         /// Do not open VS Code after setup
         #[arg(long)]
         no_vscode: bool,
+
+        /// Node.js major version (typescript / javascript / solidity-ts stacks)
+        #[arg(long, value_name = "VERSION")]
+        node_version: Option<String>,
+
+        /// Python version, e.g. 3.12 (python stack)
+        #[arg(long, value_name = "VERSION")]
+        python_version: Option<String>,
+
+        /// Rust version (rust stack)
+        #[arg(long, value_name = "VERSION")]
+        rust_version: Option<String>,
     },
 
     /// List available stacks
@@ -98,6 +122,9 @@ fn main() -> Result<()> {
             no_vscode,
             global,
             path,
+            node_version,
+            python_version,
+            rust_version,
         } => {
             prerequisites::check()?;
 
@@ -119,6 +146,9 @@ fn main() -> Result<()> {
                 no_git,
                 no_vscode,
                 location,
+                node_version,
+                python_version,
+                rust_version,
             };
 
             let config = cli::gather_config(args)?;
@@ -152,6 +182,9 @@ fn main() -> Result<()> {
             no_secrets,
             force,
             no_vscode: _,
+            node_version,
+            python_version,
+            rust_version,
         } => {
             prerequisites::check()?;
 
@@ -180,6 +213,9 @@ fn main() -> Result<()> {
                 force,
                 project_dir: project_dir.clone(),
                 secrets_dir: secrets_dir.clone(),
+                node_version,
+                python_version,
+                rust_version,
             };
 
             let targets = cli::gather_retrofit_targets(args)?;

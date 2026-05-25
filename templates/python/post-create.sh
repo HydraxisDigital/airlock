@@ -4,7 +4,5 @@ echo "Configuration Python / uv..."
 
 echo "  ✔ uv $(uv --version)"
 
-if [[ ! -f pyproject.toml ]]; then
-    uv init --name "${PROJECT_NAME:-$(basename "$PWD")}"
-    echo "  ✔ pyproject.toml created"
-fi
+# No project is initialised here: bootstrap your app in the empty project/ dir,
+# e.g. `cd project && uv init`

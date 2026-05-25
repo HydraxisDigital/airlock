@@ -1,4 +1,4 @@
-# Secrets — JAMAIS dans le repo
+# Secrets — NEVER in the repo
 .env
 .env.*
 *.env
@@ -20,6 +20,7 @@ Thumbs.db
 node_modules/
 dist/
 .npm
+.pnpm-*
 
 # Rust
 target/

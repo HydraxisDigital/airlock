@@ -7,6 +7,40 @@ use thiserror::Error;
 static TEMPLATES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionEntry {
+    pub version: String,
+    #[serde(default)]
+    pub image: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LanguageVersion {
+    pub name: String,
+    pub token: String,
+    pub default: String,
+    pub supported: Vec<VersionEntry>,
+}
+
+impl LanguageVersion {
+    pub fn versions(&self) -> Vec<&str> {
+        self.supported.iter().map(|e| e.version.as_str()).collect()
+    }
+
+    pub fn supports(&self, version: &str) -> bool {
+        self.supported.iter().any(|e| e.version == version)
+    }
+
+    /// Tag substituted into the Dockerfile `FROM`. Falls back to the version
+    /// itself when no explicit image mapping is declared.
+    pub fn image_for(&self, version: &str) -> Option<&str> {
+        self.supported
+            .iter()
+            .find(|e| e.version == version)
+            .map(|e| e.image.as_deref().unwrap_or(e.version.as_str()))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StackMeta {
     pub id: String,
     pub label: String,
@@ -14,6 +48,37 @@ pub struct StackMeta {
     pub audit_command: String,
     pub tree_command: String,
     pub remote_env: HashMap<String, String>,
+    #[serde(default)]
+    pub language_version: Option<LanguageVersion>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StackChoice {
+    pub meta: StackMeta,
+    pub version: Option<String>,
+}
+
+impl StackChoice {
+    pub fn new(meta: StackMeta) -> Self {
+        Self {
+            meta,
+            version: None,
+        }
+    }
+
+    pub fn with_version(meta: StackMeta, version: Option<String>) -> Self {
+        Self { meta, version }
+    }
+
+    pub fn effective_version(&self) -> Option<&str> {
+        if let Some(v) = self.version.as_deref() {
+            return Some(v);
+        }
+        self.meta
+            .language_version
+            .as_ref()
+            .map(|lv| lv.default.as_str())
+    }
 }
 
 #[derive(Debug, Error)]
@@ -45,6 +110,7 @@ impl StackRegistry {
         // deterministic order
         let order = [
             "typescript",
+            "javascript",
             "rust",
             "python",
             "solidity",

@@ -10,5 +10,16 @@
   "tree_command": "pnpm ls --depth=Infinity",
   "remote_env": {
     "NODE_ENV": "development"
+  },
+  "language_version": {
+    "name": "node",
+    "token": "NODE_VERSION",
+    "default": "22",
+    "supported": [
+      { "version": "18" },
+      { "version": "20" },
+      { "version": "22" },
+      { "version": "24" }
+    ]
   }
 }

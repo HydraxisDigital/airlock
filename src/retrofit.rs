@@ -8,11 +8,11 @@ use console::style;
 use crate::paths::ProjectPaths;
 use crate::scaffold;
 use crate::secrets;
-use crate::stack::{StackMeta, StackRegistry};
+use crate::stack::{StackChoice, StackMeta, StackRegistry};
 
 pub struct RetrofitTarget {
     pub paths: ProjectPaths,
-    pub stack: StackMeta,
+    pub stack: StackChoice,
     pub needs_secrets: bool,
     pub display_path: String,
 }
@@ -58,7 +58,7 @@ fn run_single(target: RetrofitTarget, force: bool) -> Result<RetrofitOutcome> {
     println!("  {} devcontainer.json", style("✔").green());
     println!("  {} post-create.sh", style("✔").green());
 
-    write_security_md_if_missing(&target.paths, &target.stack)?;
+    write_security_md_if_missing(&target.paths, &target.stack.meta)?;
     merge_gitignore(&target.paths)?;
 
     if target.needs_secrets {

@@ -7,11 +7,11 @@ use inquire::{Confirm, Select, Text};
 use crate::detect;
 use crate::paths::{default_projects_dir, expand_tilde, new_uuid, slug_for_subdir, ProjectPaths};
 use crate::retrofit::{self, RetrofitOutcome, RetrofitTarget, TargetStatus};
-use crate::stack::{StackMeta, StackRegistry};
+use crate::stack::{LanguageVersion, StackChoice, StackMeta, StackRegistry};
 
 pub struct ProjectConfig {
     pub name: String,
-    pub stack: StackMeta,
+    pub stack: StackChoice,
     pub needs_secrets: bool,
     pub init_git: bool,
     pub open_vscode: bool,
@@ -25,6 +25,9 @@ pub struct CliArgs {
     pub no_git: bool,
     pub no_vscode: bool,
     pub location: Option<PathBuf>,
+    pub node_version: Option<String>,
+    pub python_version: Option<String>,
+    pub rust_version: Option<String>,
 }
 
 pub fn gather_config(args: CliArgs) -> Result<ProjectConfig> {
@@ -48,7 +51,7 @@ pub fn gather_config(args: CliArgs) -> Result<ProjectConfig> {
 
     // Stack selection
     let stacks = StackRegistry::all();
-    let stack = match args.stack {
+    let stack_meta = match args.stack {
         Some(ref id) => stacks
             .iter()
             .find(|s| s.id == *id)
@@ -69,6 +72,15 @@ pub fn gather_config(args: CliArgs) -> Result<ProjectConfig> {
             stacks.iter().find(|s| s.label == choice).cloned().unwrap()
         }
     };
+
+    let version_flags = LanguageVersionFlags {
+        node: args.node_version.clone(),
+        python: args.python_version.clone(),
+        rust: args.rust_version.clone(),
+    };
+    let chosen_version =
+        resolve_language_version(&stack_meta, &version_flags, non_interactive, None)?;
+    let stack = StackChoice::with_version(stack_meta, chosen_version);
 
     // Secrets (default false in non-interactive mode)
     let needs_secrets = match args.secrets {
@@ -161,7 +173,17 @@ pub fn print_summary(config: &ProjectConfig, dir: &std::path::Path) {
     println!();
     println!("  Project : {}", style(&config.name).bold());
     println!("  Dir     : {}", style(dir.display()).dim());
-    println!("  Stack   : {}", style(&config.stack.label).bold());
+    println!("  Stack   : {}", style(&config.stack.meta.label).bold());
+    if let Some(v) = config.stack.effective_version() {
+        let lang = config
+            .stack
+            .meta
+            .language_version
+            .as_ref()
+            .map(|lv| lv.name.as_str())
+            .unwrap_or("version");
+        println!("  {:<7} : {}", lang, style(v).bold());
+    }
     println!(
         "  Secrets : {}",
         if config.needs_secrets {
@@ -194,6 +216,9 @@ pub struct RetrofitArgs {
     pub force: bool,
     pub project_dir: PathBuf,
     pub secrets_dir: PathBuf,
+    pub node_version: Option<String>,
+    pub python_version: Option<String>,
+    pub rust_version: Option<String>,
 }
 
 pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>> {
@@ -209,6 +234,12 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
     let root_stack = detect::detect_stack(&args.project_dir).unwrap_or("minimal");
 
     let mono_stack_mode = root_stack != "minimal" || args.stack.is_some();
+
+    let version_flags = LanguageVersionFlags {
+        node: args.node_version.clone(),
+        python: args.python_version.clone(),
+        rust: args.rust_version.clone(),
+    };
 
     if mono_stack_mode {
         // Reject ambiguous --stack on a manifest-less monorepo root
@@ -238,8 +269,15 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
             args.secrets,
             &args.secrets_dir,
             None,
+            &version_flags,
         )?;
         return Ok(vec![target]);
+    }
+
+    if version_flags.any() {
+        bail!(
+            "version flags require a single-stack target (no --node-version/--python-version/--rust-version in multi-subdir mode)"
+        );
     }
 
     // Multi sub-dir mode
@@ -313,9 +351,19 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
             subdir_name
         );
 
+        let detected_version =
+            detect_version_for_stack(&subdir, &stack_meta).map(|v| v.to_string());
+        let chosen_version = resolve_language_version(
+            &stack_meta,
+            &LanguageVersionFlags::default(),
+            false,
+            detected_version.as_deref(),
+        )?;
+        let stack = StackChoice::with_version(stack_meta, chosen_version);
+
         targets.push(RetrofitTarget {
             paths,
-            stack: stack_meta,
+            stack,
             needs_secrets,
             display_path,
         });
@@ -335,11 +383,12 @@ fn build_single_target(
     secrets_arg: Option<bool>,
     secrets_dir: &Path,
     explicit_slug: Option<&str>,
+    version_flags: &LanguageVersionFlags,
 ) -> Result<RetrofitTarget> {
     let stacks = StackRegistry::all();
     let non_interactive = forced_stack.is_some() || secrets_arg.is_some();
 
-    let stack = match forced_stack {
+    let stack_meta = match forced_stack {
         Some(id) => stacks.iter().find(|s| s.id == id).cloned().ok_or_else(|| {
             let valid: Vec<&str> = stacks.iter().map(|s| s.id.as_str()).collect();
             anyhow::anyhow!(
@@ -378,6 +427,16 @@ fn build_single_target(
         }
     };
 
+    let detected_version =
+        detect_version_for_stack(&project_dir, &stack_meta).map(|v| v.to_string());
+    let chosen_version = resolve_language_version(
+        &stack_meta,
+        version_flags,
+        non_interactive,
+        detected_version.as_deref(),
+    )?;
+    let stack = StackChoice::with_version(stack_meta, chosen_version);
+
     let needs_secrets = match secrets_arg {
         Some(v) => v,
         None if non_interactive => false,
@@ -413,6 +472,11 @@ fn stack_meta_for(id: &str) -> Result<StackMeta> {
         .ok_or_else(|| anyhow::anyhow!("Unknown stack '{}'", id))
 }
 
+fn detect_version_for_stack(project_dir: &Path, stack: &StackMeta) -> Option<String> {
+    let lv = stack.language_version.as_ref()?;
+    detect::detect_language_version(project_dir, &lv.name)
+}
+
 fn determine_uuid(target_dir: &Path) -> String {
     let dc = target_dir.join(".devcontainer").join("devcontainer.json");
     if dc.exists() {
@@ -445,8 +509,12 @@ pub fn print_retrofit_outcomes(outcomes: &[RetrofitOutcome]) {
 
     for o in outcomes {
         let path = &o.target.display_path;
-        let stack_id = &o.target.stack.id;
+        let stack_id = &o.target.stack.meta.id;
         let name = &o.target.paths.name;
+        let stack_label = match o.target.stack.effective_version() {
+            Some(v) => format!("{} {}", stack_id, v),
+            None => stack_id.clone(),
+        };
 
         match &o.status {
             TargetStatus::Done => {
@@ -455,7 +523,7 @@ pub fn print_retrofit_outcomes(outcomes: &[RetrofitOutcome]) {
                     "  {} {}   {}   {}",
                     style("✔").green(),
                     style(path).bold(),
-                    style(stack_id).dim(),
+                    style(&stack_label).dim(),
                     style(name).cyan(),
                 );
                 if o.target.needs_secrets {
@@ -484,4 +552,139 @@ pub fn print_retrofit_outcomes(outcomes: &[RetrofitOutcome]) {
     println!("  1. Open the subdir in VS Code → 'Reopen in Container'");
     println!("  2. Edit secrets at the paths shown above");
     println!();
+}
+
+#[derive(Default, Clone)]
+pub struct LanguageVersionFlags {
+    pub node: Option<String>,
+    pub python: Option<String>,
+    pub rust: Option<String>,
+}
+
+impl LanguageVersionFlags {
+    fn any(&self) -> bool {
+        self.node.is_some() || self.python.is_some() || self.rust.is_some()
+    }
+
+    fn for_lang(&self, name: &str) -> Option<&str> {
+        match name {
+            "node" => self.node.as_deref(),
+            "python" => self.python.as_deref(),
+            "rust" => self.rust.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn mismatched_flag(&self, stack_lang: Option<&str>) -> Option<&'static str> {
+        let conflicts = |name: &str, value: &Option<String>| -> Option<&'static str> {
+            if value.is_some() && Some(name) != stack_lang {
+                match name {
+                    "node" => Some("--node-version"),
+                    "python" => Some("--python-version"),
+                    "rust" => Some("--rust-version"),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        };
+        conflicts("node", &self.node)
+            .or_else(|| conflicts("python", &self.python))
+            .or_else(|| conflicts("rust", &self.rust))
+    }
+}
+
+fn validate_supported(lv: &LanguageVersion, version: &str) -> Result<()> {
+    if !lv.supports(version) {
+        anyhow::bail!(
+            "Version '{}' is not supported for {}. Supported: {}",
+            version,
+            lv.name,
+            lv.versions().join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn resolve_language_version(
+    stack: &StackMeta,
+    flags: &LanguageVersionFlags,
+    non_interactive: bool,
+    detected: Option<&str>,
+) -> Result<Option<String>> {
+    let lv = match stack.language_version.as_ref() {
+        Some(v) => v,
+        None => {
+            if let Some(flag) = flags.mismatched_flag(None) {
+                anyhow::bail!(
+                    "{} is not applicable to stack '{}' (no versionable language)",
+                    flag,
+                    stack.id
+                );
+            }
+            return Ok(None);
+        }
+    };
+
+    if let Some(flag) = flags.mismatched_flag(Some(lv.name.as_str())) {
+        anyhow::bail!(
+            "{} is not applicable to stack '{}' (expected --{}-version)",
+            flag,
+            stack.id,
+            lv.name
+        );
+    }
+
+    if let Some(explicit) = flags.for_lang(&lv.name) {
+        validate_supported(lv, explicit)?;
+        return Ok(Some(explicit.to_string()));
+    }
+
+    if let Some(d) = detected {
+        if lv.supports(d) {
+            if non_interactive {
+                println!(
+                    "  {} detected {} {} (from project files)",
+                    style("✔").green(),
+                    lv.name,
+                    d
+                );
+                return Ok(Some(d.to_string()));
+            }
+            let prompt = format!("Detected {} {}. Use this version?", lv.name, d);
+            let confirmed = Confirm::new(&format!("{}", style(prompt).bold()))
+                .with_default(true)
+                .prompt()
+                .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?;
+            if confirmed {
+                return Ok(Some(d.to_string()));
+            }
+        } else {
+            println!(
+                "  {} detected {} {}, not in supported list — falling back to default",
+                style("⚠").yellow(),
+                lv.name,
+                d
+            );
+            if non_interactive {
+                return Ok(Some(lv.default.clone()));
+            }
+        }
+    } else if non_interactive {
+        return Ok(Some(lv.default.clone()));
+    }
+
+    let label = format!("{} version", lv.name);
+    let options: Vec<String> = lv.versions().iter().map(|s| s.to_string()).collect();
+    let default_idx = options.iter().position(|v| v == &lv.default).unwrap_or(0);
+    let choice = Select::new(&format!("{}", style(label).bold()), options.clone())
+        .with_starting_cursor(default_idx)
+        .prompt()
+        .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?;
+    Ok(Some(choice))
+}
+
+#[allow(dead_code)]
+fn _ensure_flags_consumed(flags: &LanguageVersionFlags) {
+    let _ = flags.any();
 }

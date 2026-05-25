@@ -5,7 +5,5 @@ echo "Configuration Rust..."
 echo "  ✔ cargo-audit $(cargo audit --version 2>/dev/null || echo 'not installed')"
 echo "  ✔ cargo-deny  $(cargo deny --version 2>/dev/null || echo 'not installed')"
 
-if [[ ! -f Cargo.toml ]]; then
-    cargo init --name "${PROJECT_NAME:-$(basename "$PWD")}" .
-    echo "  ✔ Cargo.toml created"
-fi
+# No project is initialised here: bootstrap your app in the empty project/ dir,
+# e.g. `cd project && cargo init .`

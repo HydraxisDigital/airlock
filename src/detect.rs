@@ -65,7 +65,10 @@ pub fn detect_stack(project_dir: &Path) -> Option<&'static str> {
         if package_uses_hardhat(&package_json) {
             return Some("solidity-ts");
         }
-        return Some("typescript");
+        if project_dir.join("tsconfig.json").exists() {
+            return Some("typescript");
+        }
+        return Some("javascript");
     }
     if project_dir.join("Cargo.toml").exists() {
         return Some("rust");
@@ -78,6 +81,118 @@ pub fn detect_stack(project_dir: &Path) -> Option<&'static str> {
     }
 
     Some("minimal")
+}
+
+pub fn detect_language_version(project_dir: &Path, lang_name: &str) -> Option<String> {
+    match lang_name {
+        "node" => detect_node_version(project_dir),
+        "python" => detect_python_version(project_dir),
+        "rust" => detect_rust_version(project_dir),
+        _ => None,
+    }
+}
+
+fn detect_node_version(project_dir: &Path) -> Option<String> {
+    if let Ok(content) = fs::read_to_string(project_dir.join(".nvmrc")) {
+        if let Some(v) = first_major_token(&content) {
+            return Some(v);
+        }
+    }
+    if let Ok(content) = fs::read_to_string(project_dir.join(".node-version")) {
+        if let Some(v) = first_major_token(&content) {
+            return Some(v);
+        }
+    }
+    let pkg = project_dir.join("package.json");
+    if let Ok(content) = fs::read_to_string(&pkg) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(node) = value
+                .get("engines")
+                .and_then(|e| e.get("node"))
+                .and_then(|n| n.as_str())
+            {
+                if let Some(v) = first_major_token(node) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn detect_python_version(project_dir: &Path) -> Option<String> {
+    if let Ok(content) = fs::read_to_string(project_dir.join(".python-version")) {
+        if let Some(v) = first_minor_token(&content) {
+            return Some(v);
+        }
+    }
+    if let Ok(content) = fs::read_to_string(project_dir.join("pyproject.toml")) {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("requires-python") {
+                let rest = rest.trim_start_matches([' ', '=', ':']);
+                if let Some(v) = first_minor_token(rest) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn detect_rust_version(project_dir: &Path) -> Option<String> {
+    if let Ok(content) = fs::read_to_string(project_dir.join("rust-toolchain.toml")) {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("channel") {
+                let rest = rest
+                    .trim_start_matches([' ', '=', ':'])
+                    .trim_matches(['"', '\'', ' ']);
+                if let Some(v) = first_minor_token(rest) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    if let Ok(content) = fs::read_to_string(project_dir.join("rust-toolchain")) {
+        if let Some(v) = first_minor_token(&content) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn first_version_token(s: &str) -> Option<String> {
+    let mut buf = String::new();
+    for c in s.chars() {
+        if c.is_ascii_digit() || c == '.' {
+            buf.push(c);
+        } else if !buf.is_empty() {
+            break;
+        }
+    }
+    let trimmed = buf.trim_end_matches('.').to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn first_major_token(s: &str) -> Option<String> {
+    let full = first_version_token(s)?;
+    let major = full.split('.').next()?;
+    Some(major.to_string())
+}
+
+fn first_minor_token(s: &str) -> Option<String> {
+    let full = first_version_token(s)?;
+    let mut parts = full.split('.');
+    let major = parts.next()?;
+    match parts.next() {
+        Some(m) => Some(format!("{}.{}", major, m)),
+        None => Some(major.to_string()),
+    }
 }
 
 fn package_uses_hardhat(package_json: &Path) -> bool {
@@ -118,7 +233,15 @@ mod tests {
     fn detect_stack_typescript() {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("package.json"), "{}").unwrap();
+        fs::write(tmp.path().join("tsconfig.json"), "{}").unwrap();
         assert_eq!(detect_stack(tmp.path()), Some("typescript"));
+    }
+
+    #[test]
+    fn detect_stack_javascript() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("package.json"), "{}").unwrap();
+        assert_eq!(detect_stack(tmp.path()), Some("javascript"));
     }
 
     #[test]
@@ -200,7 +323,7 @@ mod tests {
             names,
             vec![
                 ("backend".to_string(), "python"),
-                ("frontend".to_string(), "typescript"),
+                ("frontend".to_string(), "javascript"),
             ]
         );
     }
