@@ -1,10 +1,11 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 
 use anyhow::Result;
 use console::style;
 
-use crate::paths::ProjectPaths;
+use crate::paths::{new_uuid, slug_for_subdir, ProjectPaths};
 use crate::stack::{StackChoice, StackMeta, StackRegistry};
 use crate::{devcontainer, secrets};
 
@@ -12,6 +13,13 @@ pub struct ScaffoldOptions {
     pub needs_secrets: bool,
     pub init_git: bool,
     pub open_vscode: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonorepoTarget {
+    pub name: String,
+    pub stack: StackChoice,
+    pub needs_secrets: bool,
 }
 
 pub fn run(paths: &ProjectPaths, stack: &StackChoice, opts: &ScaffoldOptions) -> Result<()> {
@@ -37,6 +45,53 @@ pub fn run(paths: &ProjectPaths, stack: &StackChoice, opts: &ScaffoldOptions) ->
     Ok(())
 }
 
+pub fn run_monorepo(
+    root_paths: &ProjectPaths,
+    targets: &[MonorepoTarget],
+    opts: &ScaffoldOptions,
+    secrets_dir: &Path,
+) -> Result<()> {
+    create_monorepo_root(root_paths)?;
+
+    let mut target_paths = Vec::with_capacity(targets.len());
+    for target in targets {
+        let subdir = root_paths.dir.join(&target.name);
+        fs::create_dir_all(&subdir)?;
+
+        let base_slug = slug_for_subdir(&root_paths.dir, &target.name);
+        let uuid = new_uuid();
+        let paths = ProjectPaths::for_existing_with_slug(subdir, secrets_dir, &uuid, &base_slug)?;
+
+        println!(
+            "\n{} {}",
+            style("──").bold().cyan(),
+            style(format!("Generating {}", target.name)).bold().cyan()
+        );
+        write_devcontainer_files(&paths, &target.stack, target.needs_secrets)?;
+
+        if target.needs_secrets {
+            secrets::setup(&paths)?;
+        }
+
+        target_paths.push((target, paths));
+    }
+
+    write_gitignore(root_paths)?;
+    write_monorepo_security_md(root_paths, targets)?;
+
+    if opts.init_git {
+        crate::git::init(root_paths)?;
+    }
+
+    print_monorepo_summary(root_paths, &target_paths);
+
+    if opts.open_vscode {
+        open_vscode(root_paths)?;
+    }
+
+    Ok(())
+}
+
 pub(crate) fn write_devcontainer_files(
     paths: &ProjectPaths,
     stack: &StackChoice,
@@ -46,6 +101,16 @@ pub(crate) fn write_devcontainer_files(
     write_dockerfile(paths, stack)?;
     devcontainer::write(paths, &stack.meta, needs_secrets)?;
     write_post_create(paths, &stack.meta)?;
+    Ok(())
+}
+
+fn create_monorepo_root(paths: &ProjectPaths) -> Result<()> {
+    println!(
+        "\n{}",
+        style("── Creating monorepo structure ──").bold().cyan()
+    );
+    fs::create_dir_all(&paths.dir)?;
+    println!("  {} Root directory created", style("✔").green());
     Ok(())
 }
 
@@ -142,6 +207,27 @@ fn write_security_md(paths: &ProjectPaths, stack: &StackMeta) -> Result<()> {
     Ok(())
 }
 
+fn write_monorepo_security_md(paths: &ProjectPaths, targets: &[MonorepoTarget]) -> Result<()> {
+    let template = StackRegistry::get_common_file("SECURITY.md.tmpl").unwrap_or("");
+    let audit = targets
+        .iter()
+        .map(|target| format!("cd {} && {}", target.name, target.stack.meta.audit_command))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let tree = targets
+        .iter()
+        .map(|target| format!("cd {} && {}", target.name, target.stack.meta.tree_command))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let content = template
+        .replace("${PROJECT_NAME}", &paths.name)
+        .replace("${AUDIT_COMMAND}", &audit)
+        .replace("${TREE_COMMAND}", &tree);
+    fs::write(paths.dir.join("SECURITY.md"), content)?;
+    println!("  {} SECURITY.md", style("✔").green());
+    Ok(())
+}
+
 fn print_summary(paths: &ProjectPaths, _stack: &StackMeta, opts: &ScaffoldOptions) {
     println!("\n{}", style("── Setup complete ──").bold().cyan());
     println!();
@@ -176,6 +262,44 @@ fn print_summary(paths: &ProjectPaths, _stack: &StackMeta, opts: &ScaffoldOption
     );
     step += 1;
     println!("  {step}. Verify each package on socket.dev before enabling");
+    println!();
+}
+
+fn print_monorepo_summary(paths: &ProjectPaths, targets: &[(&MonorepoTarget, ProjectPaths)]) {
+    println!("\n{}", style("── Setup complete ──").bold().cyan());
+    println!();
+    println!("  {} is ready.", style(&paths.name).bold().green());
+    println!();
+    println!("  {} {}", style("📁"), style(paths.dir.display()).dim());
+    println!("  🐳 Isolated Dev Containers per sub-directory");
+    println!();
+
+    for (target, target_paths) in targets {
+        let stack_label = match target.stack.effective_version() {
+            Some(version) => format!("{} {}", target.stack.meta.id, version),
+            None => target.stack.meta.id.clone(),
+        };
+        println!(
+            "  {} {:<16} {:<18} {}",
+            style("✔").green(),
+            format!("{}/", target.name),
+            style(stack_label).dim(),
+            style(&target_paths.name).cyan()
+        );
+        if target.needs_secrets {
+            println!(
+                "      🔑 secrets → {}",
+                style(target_paths.secret_file.display()).dim()
+            );
+        }
+    }
+
+    println!();
+    println!("  {}", style("Next steps:").dim());
+    println!("  1. Open the root in VS Code to work across the monorepo");
+    println!("  2. Bootstrap each app in its subdir");
+    println!("  3. Reopen a subdir in Container when you want its isolated environment");
+    println!("  4. Verify each package on socket.dev before enabling");
     println!();
 }
 

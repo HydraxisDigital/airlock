@@ -14,7 +14,7 @@ pub fn init(paths: &ProjectPaths) -> Result<()> {
          \n\
          - Devcontainer with network and filesystem isolation\n\
          - pnpm/uv with scripts disabled by default (if applicable)\n\
-         - Secrets mounted read-only from ~/.secrets/\n\
+         - Secrets mounted read-only from ~/.airlock/\n\
          - All Docker capabilities dropped",
         env!("CARGO_PKG_VERSION")
     );

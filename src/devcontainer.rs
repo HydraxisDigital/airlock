@@ -5,6 +5,12 @@ use serde_json::{json, Value};
 use crate::paths::ProjectPaths;
 use crate::stack::StackMeta;
 
+const REQUIRED_VSCODE_EXTENSIONS: [&str; 3] = [
+    "anthropic.claude-code",
+    "openai.chatgpt",
+    "Google.geminicodeassist",
+];
+
 fn docker_name(name: &str) -> String {
     let sanitized: String = name
         .chars()
@@ -20,7 +26,13 @@ fn docker_name(name: &str) -> String {
 }
 
 pub fn build(paths: &ProjectPaths, stack: &StackMeta, needs_secrets: bool) -> String {
-    let extensions: Vec<Value> = stack.vscode_extensions.iter().map(|e| json!(e)).collect();
+    let mut extension_ids = stack.vscode_extensions.clone();
+    for extension in REQUIRED_VSCODE_EXTENSIONS {
+        if !extension_ids.iter().any(|id| id == extension) {
+            extension_ids.push(extension.to_string());
+        }
+    }
+    let extensions: Vec<Value> = extension_ids.iter().map(|e| json!(e)).collect();
 
     let mut remote_env: HashMap<String, &str> = HashMap::new();
     remote_env.insert("EDITOR".to_string(), "code --wait");

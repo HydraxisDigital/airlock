@@ -29,11 +29,15 @@ enum Commands {
         /// Project name (optional — interactive prompt if omitted)
         name: Option<String>,
 
+        /// Monorepo target, repeatable: <subdir>=<stack>[@<version>]
+        #[arg(long, value_name = "SUBDIR=STACK[@VERSION]")]
+        target: Vec<String>,
+
         /// Tech stack (typescript, javascript, rust, python, solidity, solidity-ts, minimal)
         #[arg(long, short)]
         stack: Option<String>,
 
-        /// Enable secrets (~/.secrets/<slug>.env)
+        /// Enable secrets (~/.airlock/<slug>/env)
         #[arg(long)]
         secrets: bool,
 
@@ -116,6 +120,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::New {
             name,
+            target,
             stack,
             secrets,
             no_git,
@@ -138,6 +143,79 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+
+            if target.is_empty() && stack.is_none() {
+                match cli::prompt_new_layout()? {
+                    cli::NewLayout::SingleStack => {}
+                    cli::NewLayout::Monorepo => {
+                        if node_version.is_some()
+                            || python_version.is_some()
+                            || rust_version.is_some()
+                        {
+                            anyhow::bail!(
+                                "--node-version/--python-version/--rust-version are single-stack flags; use --target <subdir>=<stack>@<version> for non-interactive monorepos"
+                            );
+                        }
+
+                        let args = cli::MonorepoArgs {
+                            name,
+                            secrets: if secrets { Some(true) } else { None },
+                            no_git,
+                            no_vscode,
+                            location,
+                        };
+                        let config = cli::gather_monorepo_config(args)?;
+                        let secrets_dir = default_secrets_dir();
+                        let root_paths =
+                            ProjectPaths::new(&config.name, &config.location, &secrets_dir)?;
+
+                        cli::print_monorepo_config_summary(&config, &root_paths.dir);
+                        let proceed = cli::confirm_proceed()?;
+                        if !proceed {
+                            println!("  Cancelled.");
+                            return Ok(());
+                        }
+
+                        let opts = ScaffoldOptions {
+                            needs_secrets: config.targets.iter().any(|target| target.needs_secrets),
+                            init_git: config.init_git,
+                            open_vscode: config.open_vscode,
+                        };
+                        scaffold::run_monorepo(&root_paths, &config.targets, &opts, &secrets_dir)?;
+                        return Ok(());
+                    }
+                }
+            }
+
+            if !target.is_empty() {
+                if stack.is_some() {
+                    anyhow::bail!("--stack cannot be combined with --target");
+                }
+                if node_version.is_some() || python_version.is_some() || rust_version.is_some() {
+                    anyhow::bail!(
+                        "--node-version/--python-version/--rust-version cannot be combined with --target; use <subdir>=<stack>@<version>"
+                    );
+                }
+
+                let name = name.ok_or_else(|| {
+                    anyhow::anyhow!("Project name is required when using --target")
+                })?;
+                if name.trim().is_empty() {
+                    anyhow::bail!("Project name is required.");
+                }
+                let name = name.trim().to_string();
+                let location = location.unwrap_or(std::env::current_dir()?);
+                let secrets_dir = default_secrets_dir();
+                let root_paths = ProjectPaths::new(&name, &location, &secrets_dir)?;
+                let targets = cli::parse_new_targets(&target, secrets)?;
+                let opts = ScaffoldOptions {
+                    needs_secrets: secrets,
+                    init_git: !no_git,
+                    open_vscode: !no_vscode,
+                };
+                scaffold::run_monorepo(&root_paths, &targets, &opts, &secrets_dir)?;
+                return Ok(());
+            }
 
             let args = cli::CliArgs {
                 name,

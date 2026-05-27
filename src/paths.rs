@@ -142,7 +142,7 @@ pub fn default_projects_dir() -> PathBuf {
 pub fn default_secrets_dir() -> PathBuf {
     std::env::var("SECRETS_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs_home().join(".secrets"))
+        .unwrap_or_else(|_| dirs_home().join(".airlock"))
 }
 
 pub fn default_age_recipients() -> PathBuf {
