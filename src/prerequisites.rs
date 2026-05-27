@@ -6,6 +6,12 @@ pub struct Prerequisites {
 }
 
 pub fn check() -> Result<Prerequisites> {
+    if std::env::var("AIRLOCK_SKIP_PREREQUISITES").as_deref() == Ok("1") {
+        return Ok(Prerequisites {
+            age_available: false,
+        });
+    }
+
     println!("\n{}", style("── Checking prerequisites ──").bold().cyan());
     println!();
 

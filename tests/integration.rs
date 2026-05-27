@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::Command;
 
 use tempfile::TempDir;
 
@@ -47,6 +48,38 @@ fn scaffold_stack_with_version(stack_id: &str, version: &str) -> (TempDir, std::
     airlock::scaffold::run(&paths, &stack, &opts).unwrap();
     let project_dir = paths.dir.clone();
     (tmp, project_dir)
+}
+
+fn scaffold_monorepo(
+    targets: &[&str],
+    needs_secrets: bool,
+) -> (
+    TempDir,
+    std::path::PathBuf,
+    Vec<airlock::scaffold::MonorepoTarget>,
+) {
+    let tmp = TempDir::new().unwrap();
+    let projects_dir = tmp.path().join("Projects");
+    let secrets_dir = tmp.path().join("secrets");
+    std::fs::create_dir_all(&projects_dir).unwrap();
+    std::fs::create_dir_all(&secrets_dir).unwrap();
+
+    let root_paths = airlock::paths::ProjectPaths::new("crm", &projects_dir, &secrets_dir).unwrap();
+    let specs = targets.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let parsed = airlock::cli::parse_new_targets(&specs, needs_secrets).unwrap();
+    let opts = airlock::scaffold::ScaffoldOptions {
+        needs_secrets,
+        init_git: false,
+        open_vscode: false,
+    };
+
+    airlock::scaffold::run_monorepo(&root_paths, &parsed, &opts, &secrets_dir).unwrap();
+
+    (tmp, root_paths.dir.clone(), parsed)
+}
+
+fn airlock_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_airlock")
 }
 
 fn assert_required_files(project_dir: &Path) {
@@ -256,6 +289,249 @@ fn test_rust_explicit_version() {
 }
 
 #[test]
+fn test_monorepo_new_creates_target_devcontainers() {
+    let (_tmp, dir, _targets) =
+        scaffold_monorepo(&["frontend=typescript@22", "backend=python@3.12"], false);
+
+    assert!(dir.join(".gitignore").exists());
+    assert!(dir.join("SECURITY.md").exists());
+    assert!(!dir.join(".devcontainer").exists());
+    assert!(!dir.join("project").exists());
+
+    assert!(dir.join("frontend/.devcontainer/Dockerfile").exists());
+    assert!(dir
+        .join("frontend/.devcontainer/devcontainer.json")
+        .exists());
+    assert!(dir.join("frontend/.devcontainer/post-create.sh").exists());
+    assert!(!dir.join("frontend/project").exists());
+
+    assert!(dir.join("backend/.devcontainer/Dockerfile").exists());
+    assert!(dir.join("backend/.devcontainer/devcontainer.json").exists());
+    assert!(dir.join("backend/.devcontainer/post-create.sh").exists());
+    assert!(!dir.join("backend/project").exists());
+}
+
+#[test]
+fn test_monorepo_new_pins_target_versions() {
+    let (_tmp, dir, _targets) =
+        scaffold_monorepo(&["frontend=typescript@22", "backend=python@3.12"], false);
+
+    let frontend_dockerfile =
+        std::fs::read_to_string(dir.join("frontend/.devcontainer/Dockerfile")).unwrap();
+    assert!(
+        frontend_dockerfile.contains("typescript-node:22"),
+        "frontend should pin node 22: {}",
+        frontend_dockerfile
+    );
+
+    let backend_dockerfile =
+        std::fs::read_to_string(dir.join("backend/.devcontainer/Dockerfile")).unwrap();
+    assert!(
+        backend_dockerfile.contains("python:3.12"),
+        "backend should pin python 3.12: {}",
+        backend_dockerfile
+    );
+}
+
+#[test]
+fn test_monorepo_new_secrets_are_per_target() {
+    let (_tmp, dir, targets) =
+        scaffold_monorepo(&["frontend=typescript@22", "backend=python@3.12"], true);
+
+    assert_eq!(targets.len(), 2);
+    assert!(targets.iter().all(|target| target.needs_secrets));
+
+    let frontend_json =
+        std::fs::read_to_string(dir.join("frontend/.devcontainer/devcontainer.json")).unwrap();
+    let backend_json =
+        std::fs::read_to_string(dir.join("backend/.devcontainer/devcontainer.json")).unwrap();
+    assert!(frontend_json.contains("\"mounts\""));
+    assert!(backend_json.contains("\"mounts\""));
+    assert!(frontend_json.contains("crm-frontend"));
+    assert!(backend_json.contains("crm-backend"));
+}
+
+#[test]
+fn test_parse_new_targets_rejects_duplicates() {
+    let specs = vec![
+        "frontend=typescript@22".to_string(),
+        "frontend=python@3.12".to_string(),
+    ];
+    let err = airlock::cli::parse_new_targets(&specs, false).unwrap_err();
+    assert!(
+        err.to_string().contains("Duplicate target"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+#[test]
+fn test_parse_new_targets_rejects_versionless_stack_version() {
+    let specs = vec!["contracts=solidity@1".to_string()];
+    let err = airlock::cli::parse_new_targets(&specs, false).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("does not support language versions"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+#[test]
+fn test_parse_new_targets_supports_per_target_secrets() {
+    let specs = vec![
+        "frontend=typescript@22:secrets".to_string(),
+        "backend=python@3.12:no-secrets".to_string(),
+    ];
+    let targets = airlock::cli::parse_new_targets(&specs, false).unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(targets[0].needs_secrets);
+    assert!(!targets[1].needs_secrets);
+}
+
+#[test]
+fn test_parse_new_targets_rejects_unknown_target_option() {
+    let specs = vec!["frontend=typescript@22:maybe".to_string()];
+    let err = airlock::cli::parse_new_targets(&specs, false).unwrap_err();
+    assert!(
+        err.to_string().contains(":secrets or :no-secrets"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+#[test]
+fn test_cli_new_monorepo_targets_end_to_end() {
+    let tmp = TempDir::new().unwrap();
+    let projects_dir = tmp.path().join("Projects");
+    std::fs::create_dir_all(&projects_dir).unwrap();
+
+    let output = Command::new(airlock_bin())
+        .args([
+            "new",
+            "crm",
+            "--target",
+            "frontend=typescript@22",
+            "--target",
+            "backend=python@3.12",
+            "--no-git",
+            "--no-vscode",
+            "--path",
+        ])
+        .arg(&projects_dir)
+        .env("AIRLOCK_SKIP_PREREQUISITES", "1")
+        .env("HOME", tmp.path())
+        .env_remove("SECRETS_DIR")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "airlock new failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let root = projects_dir.join("crm");
+    assert!(root.join(".gitignore").exists());
+    assert!(root.join("SECURITY.md").exists());
+    assert!(!root.join(".devcontainer").exists());
+    assert!(root
+        .join("frontend/.devcontainer/devcontainer.json")
+        .exists());
+    assert!(root
+        .join("backend/.devcontainer/devcontainer.json")
+        .exists());
+
+    let frontend_dockerfile =
+        std::fs::read_to_string(root.join("frontend/.devcontainer/Dockerfile")).unwrap();
+    let backend_dockerfile =
+        std::fs::read_to_string(root.join("backend/.devcontainer/Dockerfile")).unwrap();
+    assert!(frontend_dockerfile.contains("typescript-node:22"));
+    assert!(backend_dockerfile.contains("python:3.12"));
+}
+
+#[test]
+fn test_cli_new_monorepo_per_target_secrets_end_to_end() {
+    let tmp = TempDir::new().unwrap();
+    let projects_dir = tmp.path().join("Projects");
+    std::fs::create_dir_all(&projects_dir).unwrap();
+
+    let output = Command::new(airlock_bin())
+        .args([
+            "new",
+            "crm",
+            "--target",
+            "frontend=typescript@22:secrets",
+            "--target",
+            "backend=python@3.12:no-secrets",
+            "--no-git",
+            "--no-vscode",
+            "--path",
+        ])
+        .arg(&projects_dir)
+        .env("AIRLOCK_SKIP_PREREQUISITES", "1")
+        .env("HOME", tmp.path())
+        .env_remove("SECRETS_DIR")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "airlock new failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let root = projects_dir.join("crm");
+    let frontend_json =
+        std::fs::read_to_string(root.join("frontend/.devcontainer/devcontainer.json")).unwrap();
+    let backend_json =
+        std::fs::read_to_string(root.join("backend/.devcontainer/devcontainer.json")).unwrap();
+    assert!(frontend_json.contains("\"mounts\""));
+    assert!(frontend_json.contains(".airlock"));
+    assert!(!backend_json.contains("\"mounts\""));
+    assert!(tmp.path().join(".airlock").exists());
+    assert!(!tmp.path().join(".secrets").exists());
+}
+
+#[test]
+fn test_cli_new_monorepo_rejects_invalid_target_end_to_end() {
+    let tmp = TempDir::new().unwrap();
+    let projects_dir = tmp.path().join("Projects");
+    std::fs::create_dir_all(&projects_dir).unwrap();
+
+    let output = Command::new(airlock_bin())
+        .args([
+            "new",
+            "crm",
+            "--target",
+            "contracts=solidity@1",
+            "--no-git",
+            "--no-vscode",
+            "--path",
+        ])
+        .arg(&projects_dir)
+        .env("AIRLOCK_SKIP_PREREQUISITES", "1")
+        .env("HOME", tmp.path())
+        .env_remove("SECRETS_DIR")
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "invalid target unexpectedly succeeded\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not support language versions"),
+        "unexpected stderr: {}",
+        stderr
+    );
+}
+
+#[test]
 fn test_minimal_stack_has_no_language_version() {
     let stack = airlock::stack::StackRegistry::get("minimal").unwrap();
     assert!(stack.language_version.is_none());
@@ -358,7 +634,15 @@ fn test_detect_returns_none_when_no_indicator() {
 
 #[test]
 fn test_devcontainer_security_settings() {
-    for stack_id in &["minimal", "typescript", "python", "rust"] {
+    for stack_id in &[
+        "minimal",
+        "typescript",
+        "javascript",
+        "python",
+        "rust",
+        "solidity",
+        "solidity-ts",
+    ] {
         let (_tmp, dir) = scaffold_stack(stack_id);
         let content = std::fs::read_to_string(dir.join(".devcontainer/devcontainer.json")).unwrap();
         let json_start = content.find('{').unwrap();
@@ -380,6 +664,22 @@ fn test_devcontainer_security_settings() {
             "Stack {}: network=bridge missing",
             stack_id
         );
+
+        let extensions = v["customizations"]["vscode"]["extensions"]
+            .as_array()
+            .unwrap();
+        for extension in [
+            "anthropic.claude-code",
+            "openai.chatgpt",
+            "Google.geminicodeassist",
+        ] {
+            assert!(
+                extensions.contains(&serde_json::json!(extension)),
+                "Stack {}: required VS Code extension {} missing",
+                stack_id,
+                extension
+            );
+        }
     }
 }
 

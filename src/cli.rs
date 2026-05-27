@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
@@ -7,6 +8,7 @@ use inquire::{Confirm, Select, Text};
 use crate::detect;
 use crate::paths::{default_projects_dir, expand_tilde, new_uuid, slug_for_subdir, ProjectPaths};
 use crate::retrofit::{self, RetrofitOutcome, RetrofitTarget, TargetStatus};
+use crate::scaffold::MonorepoTarget;
 use crate::stack::{LanguageVersion, StackChoice, StackMeta, StackRegistry};
 
 pub struct ProjectConfig {
@@ -16,6 +18,19 @@ pub struct ProjectConfig {
     pub init_git: bool,
     pub open_vscode: bool,
     pub location: PathBuf,
+}
+
+pub struct MonorepoConfig {
+    pub name: String,
+    pub targets: Vec<MonorepoTarget>,
+    pub init_git: bool,
+    pub open_vscode: bool,
+    pub location: PathBuf,
+}
+
+pub enum NewLayout {
+    SingleStack,
+    Monorepo,
 }
 
 pub struct CliArgs {
@@ -28,6 +43,31 @@ pub struct CliArgs {
     pub node_version: Option<String>,
     pub python_version: Option<String>,
     pub rust_version: Option<String>,
+}
+
+pub struct MonorepoArgs {
+    pub name: Option<String>,
+    pub secrets: Option<bool>,
+    pub no_git: bool,
+    pub no_vscode: bool,
+    pub location: Option<PathBuf>,
+}
+
+pub fn prompt_new_layout() -> Result<NewLayout> {
+    let single = "Single stack";
+    let monorepo = "Monorepo";
+    let choice = Select::new(
+        &format!("{}", style("Project layout").bold()),
+        vec![single, monorepo],
+    )
+    .prompt()
+    .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?;
+
+    if choice == monorepo {
+        Ok(NewLayout::Monorepo)
+    } else {
+        Ok(NewLayout::SingleStack)
+    }
 }
 
 pub fn gather_config(args: CliArgs) -> Result<ProjectConfig> {
@@ -136,6 +176,252 @@ pub fn gather_config(args: CliArgs) -> Result<ProjectConfig> {
     })
 }
 
+pub fn gather_monorepo_config(args: MonorepoArgs) -> Result<MonorepoConfig> {
+    println!("\n{}", style("── Monorepo configuration ──").bold().cyan());
+    println!();
+
+    let name = match args.name {
+        Some(n) => n,
+        None => Text::new(&format!("{}", style("Project name").bold()))
+            .prompt()
+            .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?,
+    };
+    if name.trim().is_empty() {
+        anyhow::bail!("Project name is required.");
+    }
+    let name = name.trim().to_string();
+
+    let targets = prompt_monorepo_targets(args.secrets)?;
+
+    let init_git = if args.no_git {
+        false
+    } else {
+        Confirm::new(&format!("{}", style("Initialise a git repo?").bold()))
+            .with_default(true)
+            .prompt()
+            .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?
+    };
+
+    let open_vscode = if args.no_vscode {
+        false
+    } else {
+        Confirm::new(&format!("{}", style("Open in VS Code after setup?").bold()))
+            .with_default(true)
+            .prompt()
+            .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?
+    };
+
+    let location = match args.location {
+        Some(p) => p,
+        None => prompt_for_location()?,
+    };
+
+    Ok(MonorepoConfig {
+        name,
+        targets,
+        init_git,
+        open_vscode,
+        location,
+    })
+}
+
+fn prompt_monorepo_targets(secrets: Option<bool>) -> Result<Vec<MonorepoTarget>> {
+    let mut targets = Vec::new();
+    let mut seen = HashSet::new();
+
+    loop {
+        let target = prompt_monorepo_target(secrets, &mut seen)?;
+        targets.push(target);
+
+        let add_another = Confirm::new(&format!("{}", style("Add another sub-project?").bold()))
+            .with_default(true)
+            .prompt()
+            .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?;
+        if !add_another {
+            break;
+        }
+    }
+
+    Ok(targets)
+}
+
+fn prompt_monorepo_target(
+    secrets: Option<bool>,
+    seen: &mut HashSet<String>,
+) -> Result<MonorepoTarget> {
+    let name = loop {
+        let input = Text::new(&format!("{}", style("Sub-project name").bold()))
+            .prompt()
+            .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?;
+        let trimmed = input.trim();
+        if let Err(e) = validate_target_name(trimmed, trimmed) {
+            println!("  {} {}", style("⚠").yellow(), e);
+            continue;
+        }
+        let slug = crate::paths::slugify(trimmed);
+        if seen.contains(&slug) {
+            println!(
+                "  {} Duplicate target subdir '{}'",
+                style("⚠").yellow(),
+                trimmed
+            );
+            continue;
+        }
+        seen.insert(slug);
+        break trimmed.to_string();
+    };
+
+    let stacks = StackRegistry::all();
+    let labels: Vec<&str> = stacks.iter().map(|s| s.label.as_str()).collect();
+    let choice = Select::new(&format!("{}", style("Tech stack").bold()), labels)
+        .prompt()
+        .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?;
+    let stack_meta = stacks.iter().find(|s| s.label == choice).cloned().unwrap();
+
+    let chosen_version =
+        resolve_language_version(&stack_meta, &LanguageVersionFlags::default(), false, None)?;
+    let stack = StackChoice::with_version(stack_meta, chosen_version);
+
+    let needs_secrets = match secrets {
+        Some(v) => v,
+        None => Confirm::new(&format!(
+            "{}",
+            style(format!("Configure secrets for {}/?", name)).bold()
+        ))
+        .with_default(false)
+        .prompt()
+        .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?,
+    };
+
+    Ok(MonorepoTarget {
+        name,
+        stack,
+        needs_secrets,
+    })
+}
+
+pub fn parse_new_targets(specs: &[String], needs_secrets: bool) -> Result<Vec<MonorepoTarget>> {
+    let mut targets = Vec::with_capacity(specs.len());
+    let mut seen = HashSet::new();
+
+    for spec in specs {
+        let (name, stack_spec) = spec.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!(
+                "Invalid target '{}': expected <subdir>=<stack>[@<version>]",
+                spec
+            )
+        })?;
+        let name = name.trim();
+        validate_target_name(name, spec)?;
+
+        let slug = crate::paths::slugify(name);
+        if !seen.insert(slug.clone()) {
+            anyhow::bail!("Duplicate target subdir '{}'", name);
+        }
+
+        let stack_spec = stack_spec.trim();
+        if stack_spec.is_empty() {
+            anyhow::bail!("Invalid target '{}': stack is required", spec);
+        }
+
+        let (stack_spec, target_secrets) = parse_target_secret_override(stack_spec, spec)?;
+
+        let (stack_id, version) = match stack_spec.split_once('@') {
+            Some((id, v)) => {
+                let id = id.trim();
+                let v = v.trim();
+                if id.is_empty() || v.is_empty() {
+                    anyhow::bail!(
+                        "Invalid target '{}': expected <subdir>=<stack>[@<version>]",
+                        spec
+                    );
+                }
+                (id, Some(v))
+            }
+            None => (stack_spec, None),
+        };
+
+        let stack_meta = stack_meta_for(stack_id)?;
+        let chosen_version = match stack_meta.language_version.as_ref() {
+            Some(lv) => match version {
+                Some(v) => {
+                    validate_supported(lv, v)?;
+                    Some(v.to_string())
+                }
+                None => Some(lv.default.clone()),
+            },
+            None => {
+                if version.is_some() {
+                    anyhow::bail!(
+                        "Target '{}' uses stack '{}' which does not support language versions",
+                        name,
+                        stack_id
+                    );
+                }
+                None
+            }
+        };
+
+        targets.push(MonorepoTarget {
+            name: name.to_string(),
+            stack: StackChoice::with_version(stack_meta, chosen_version),
+            needs_secrets: target_secrets.unwrap_or(needs_secrets),
+        });
+    }
+
+    Ok(targets)
+}
+
+fn parse_target_secret_override<'a>(
+    stack_spec: &'a str,
+    full_spec: &str,
+) -> Result<(&'a str, Option<bool>)> {
+    let Some((stack_part, option)) = stack_spec.split_once(':') else {
+        return Ok((stack_spec, None));
+    };
+    let stack_part = stack_part.trim();
+    let option = option.trim();
+    if stack_part.is_empty() {
+        anyhow::bail!("Invalid target '{}': stack is required", full_spec);
+    }
+    let secrets = match option {
+        "secrets" => true,
+        "no-secrets" => false,
+        _ => {
+            anyhow::bail!(
+                "Invalid target '{}': expected :secrets or :no-secrets",
+                full_spec
+            );
+        }
+    };
+    Ok((stack_part, Some(secrets)))
+}
+
+fn validate_target_name(name: &str, spec: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("Invalid target '{}': subdir name is required", spec);
+    }
+    if name == "." || name == ".." || name.starts_with('.') {
+        anyhow::bail!(
+            "Invalid target '{}': subdir must not be hidden or relative",
+            spec
+        );
+    }
+    if name.contains('/') || name.contains('\\') {
+        anyhow::bail!(
+            "Invalid target '{}': subdir must be a direct child name",
+            spec
+        );
+    }
+    if crate::paths::slugify(name).is_empty() {
+        anyhow::bail!(
+            "Invalid target '{}': subdir name does not produce a valid slug",
+            spec
+        );
+    }
+    Ok(())
+}
+
 fn prompt_for_location() -> Result<PathBuf> {
     let cwd = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("Cannot determine current directory: {}", e))?;
@@ -194,6 +480,45 @@ pub fn print_summary(config: &ProjectConfig, dir: &std::path::Path) {
     );
     println!(
         "  Git     : {}",
+        if config.init_git {
+            style("yes").green().to_string()
+        } else {
+            style("no").dim().to_string()
+        }
+    );
+    println!();
+}
+
+pub fn print_monorepo_config_summary(config: &MonorepoConfig, dir: &std::path::Path) {
+    println!("\n{}", style("── Summary ──").bold().cyan());
+    println!();
+    println!("  {:<7} : {}", "Project", style(&config.name).bold());
+    println!("  {:<7} : {}", "Dir", style(dir.display()).dim());
+    println!();
+    for target in &config.targets {
+        let stack_label = match target.stack.effective_version() {
+            Some(version) => format!("{} {}", target.stack.meta.id, version),
+            None => target.stack.meta.id.clone(),
+        };
+        println!(
+            "  {:<7} : {:<16} {}",
+            "Target",
+            format!("{}/", target.name),
+            style(stack_label).bold()
+        );
+        println!(
+            "  {:<7} : {}",
+            "Secrets",
+            if target.needs_secrets {
+                style("yes").green().to_string()
+            } else {
+                style("no").dim().to_string()
+            }
+        );
+    }
+    println!(
+        "  {:<7} : {}",
+        "Git",
         if config.init_git {
             style("yes").green().to_string()
         } else {
