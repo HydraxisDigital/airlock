@@ -37,6 +37,7 @@ pub fn build(paths: &ProjectPaths, stack: &StackMeta, needs_secrets: bool) -> St
     let mut remote_env: HashMap<String, &str> = HashMap::new();
     remote_env.insert("EDITOR".to_string(), "code --wait");
     remote_env.insert("PROJECT_NAME".to_string(), paths.name.as_str());
+    remote_env.insert("SHELL".to_string(), "/usr/bin/zsh");
     for (k, v) in &stack.remote_env {
         remote_env.insert(k.clone(), v.as_str());
     }
@@ -61,7 +62,12 @@ pub fn build(paths: &ProjectPaths, stack: &StackMeta, needs_secrets: bool) -> St
             "vscode": {
                 "extensions": extensions,
                 "settings": {
-                    "terminal.integrated.defaultProfile.linux": "bash",
+                    "terminal.integrated.defaultProfile.linux": "zsh",
+                    "terminal.integrated.profiles.linux": {
+                        "zsh": {
+                            "path": "/usr/bin/zsh"
+                        }
+                    },
                     "security.workspace.trust.enabled": true
                 }
             }

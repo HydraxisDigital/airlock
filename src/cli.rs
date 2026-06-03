@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
+use clap::ValueEnum;
 use console::style;
 use inquire::{Confirm, Select, Text};
 
@@ -31,6 +32,14 @@ pub struct MonorepoConfig {
 pub enum NewLayout {
     SingleStack,
     Monorepo,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum RetrofitLayout {
+    /// Create one .devcontainer/ at the project root.
+    Root,
+    /// Create one .devcontainer/ per detected sub-project.
+    Subprojects,
 }
 
 pub struct CliArgs {
@@ -539,6 +548,7 @@ pub struct RetrofitArgs {
     pub stack: Option<String>,
     pub secrets: Option<bool>,
     pub force: bool,
+    pub layout: Option<RetrofitLayout>,
     pub project_dir: PathBuf,
     pub secrets_dir: PathBuf,
     pub node_version: Option<String>,
@@ -557,8 +567,14 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
     println!();
 
     let root_stack = detect::detect_stack(&args.project_dir).unwrap_or("minimal");
+    let substacks = detect::detect_substacks(&args.project_dir);
+    let explicit_layout = args.layout.is_some();
+    let layout = resolve_retrofit_layout(args.layout, &substacks, args.stack.is_some())?;
 
-    let mono_stack_mode = root_stack != "minimal" || args.stack.is_some();
+    let mono_stack_mode = !matches!(layout, RetrofitLayout::Subprojects)
+        && (matches!(layout, RetrofitLayout::Root)
+            || root_stack != "minimal"
+            || args.stack.is_some());
 
     let version_flags = LanguageVersionFlags {
         node: args.node_version.clone(),
@@ -567,26 +583,6 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
     };
 
     if mono_stack_mode {
-        // Reject ambiguous --stack on a manifest-less monorepo root
-        if args.stack.is_some() && root_stack == "minimal" {
-            let subs = detect::detect_substacks(&args.project_dir);
-            if !subs.is_empty() {
-                let names: Vec<String> = subs
-                    .iter()
-                    .map(|(p, _)| {
-                        p.file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("?")
-                            .to_string()
-                    })
-                    .collect();
-                bail!(
-                    "--stack requires a specific PATH, not a monorepo with multiple subdirs (found: {})",
-                    names.join(", ")
-                );
-            }
-        }
-
         let target = build_single_target(
             args.project_dir.clone(),
             display_path_for_root(&args.project_dir),
@@ -599,6 +595,10 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
         return Ok(vec![target]);
     }
 
+    if args.stack.is_some() {
+        bail!("--stack cannot be used with --layout subprojects; pass a specific PATH or use --layout root");
+    }
+
     if version_flags.any() {
         bail!(
             "version flags require a single-stack target (no --node-version/--python-version/--rust-version in multi-subdir mode)"
@@ -606,8 +606,7 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
     }
 
     // Multi sub-dir mode
-    let subs = detect::detect_substacks(&args.project_dir);
-    if subs.is_empty() {
+    if substacks.is_empty() {
         bail!(
             "No stack detected at {} and no sub-directories with a recognised stack — use `airlock new` instead or pass `--stack`.",
             args.project_dir.display()
@@ -617,8 +616,8 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
     println!(
         "  {} detected {} candidate sub-{}",
         style("ℹ").cyan(),
-        subs.len(),
-        if subs.len() == 1 {
+        substacks.len(),
+        if substacks.len() == 1 {
             "directory"
         } else {
             "directories"
@@ -629,7 +628,7 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
     let secrets_default = args.secrets.unwrap_or(false);
     let mut targets: Vec<RetrofitTarget> = Vec::new();
 
-    for (subdir, stack_id) in subs {
+    for (subdir, stack_id) in substacks {
         let subdir_name = subdir
             .file_name()
             .and_then(|s| s.to_str())
@@ -642,10 +641,14 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
             "Detected {} in {}/. Apply retrofit?",
             stack_meta.label, subdir_name
         );
-        let apply = Confirm::new(&format!("{}", style(prompt).bold()))
-            .with_default(true)
-            .prompt()
-            .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?;
+        let apply = if explicit_layout {
+            true
+        } else {
+            Confirm::new(&format!("{}", style(prompt).bold()))
+                .with_default(true)
+                .prompt()
+                .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?
+        };
         if !apply {
             continue;
         }
@@ -681,7 +684,7 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
         let chosen_version = resolve_language_version(
             &stack_meta,
             &LanguageVersionFlags::default(),
-            false,
+            explicit_layout,
             detected_version.as_deref(),
         )?;
         let stack = StackChoice::with_version(stack_meta, chosen_version);
@@ -699,6 +702,45 @@ pub fn gather_retrofit_targets(args: RetrofitArgs) -> Result<Vec<RetrofitTarget>
     }
 
     Ok(targets)
+}
+
+fn resolve_retrofit_layout(
+    layout: Option<RetrofitLayout>,
+    substacks: &[(PathBuf, &'static str)],
+    forced_stack: bool,
+) -> Result<RetrofitLayout> {
+    if let Some(layout) = layout {
+        return Ok(layout);
+    }
+
+    if substacks.is_empty() || forced_stack {
+        return Ok(RetrofitLayout::Root);
+    }
+
+    println!("  {} Monorepo detected:", style("ℹ").cyan());
+    for (subdir, stack_id) in substacks {
+        let name = subdir.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+        let label = StackRegistry::get(stack_id)
+            .map(|s| s.label)
+            .unwrap_or_else(|_| stack_id.to_string());
+        println!("      - {}/ {}", name, style(label).dim());
+    }
+    println!();
+
+    let root = "One devcontainer at project root";
+    let subprojects = "One devcontainer per sub-project";
+    let choice = Select::new(
+        &format!("{}", style("Devcontainer layout").bold()),
+        vec![root, subprojects],
+    )
+    .prompt()
+    .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?;
+
+    if choice == subprojects {
+        Ok(RetrofitLayout::Subprojects)
+    } else {
+        Ok(RetrofitLayout::Root)
+    }
 }
 
 fn build_single_target(
@@ -874,8 +916,31 @@ pub fn print_retrofit_outcomes(outcomes: &[RetrofitOutcome]) {
     println!("  {} retrofitted, {} skipped.", done, skipped);
     println!();
     println!("  {}", style("Next steps:").dim());
-    println!("  1. Open the subdir in VS Code → 'Reopen in Container'");
-    println!("  2. Edit secrets at the paths shown above");
+    if done == 0 {
+        println!("  1. Re-run with --force for skipped targets you want to overwrite");
+        println!();
+        return;
+    }
+
+    let done_targets: Vec<&RetrofitOutcome> = outcomes
+        .iter()
+        .filter(|o| matches!(o.status, TargetStatus::Done))
+        .collect();
+    let multi_target = done_targets.len() > 1
+        || done_targets
+            .iter()
+            .any(|o| o.target.display_path.ends_with('/'));
+    if multi_target {
+        println!("  1. Open each generated sub-project folder in VS Code");
+        println!("  2. Run 'Reopen in Container' for each one");
+    } else {
+        println!("  1. Open the project folder in VS Code");
+        println!("  2. Run 'Reopen in Container'");
+    }
+
+    if done_targets.iter().any(|o| o.target.needs_secrets) {
+        println!("  3. Edit secrets at the paths shown above");
+    }
     println!();
 }
 

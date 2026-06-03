@@ -91,6 +91,10 @@ enum Commands {
         #[arg(long)]
         force: bool,
 
+        /// Devcontainer layout for detected monorepos (root or subprojects)
+        #[arg(long, value_enum)]
+        layout: Option<cli::RetrofitLayout>,
+
         /// Do not open VS Code after setup
         #[arg(long)]
         no_vscode: bool,
@@ -259,6 +263,7 @@ fn main() -> Result<()> {
             secrets,
             no_secrets,
             force,
+            layout,
             no_vscode: _,
             node_version,
             python_version,
@@ -289,6 +294,7 @@ fn main() -> Result<()> {
                 stack,
                 secrets: secrets_opt,
                 force,
+                layout,
                 project_dir: project_dir.clone(),
                 secrets_dir: secrets_dir.clone(),
                 node_version,

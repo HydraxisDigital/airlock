@@ -117,6 +117,8 @@ airlock retrofit ./my-existing-app
 airlock retrofit . --stack rust --secrets
 airlock retrofit . --force          # overwrite an existing .devcontainer/
 airlock retrofit ./crm              # monorepo: iterate over backend/, frontend/, ...
+airlock retrofit ./crm --layout root
+airlock retrofit ./crm --layout subprojects
 ```
 
 Applies the airlock devcontainer config to a project that already exists. It
@@ -125,12 +127,15 @@ folder, and **never** opens VS Code.
 
 #### Monorepos
 
-When the target directory has no recognised manifest at its root (no
-`Cargo.toml`, `package.json`, `pyproject.toml`, `foundry.toml`), airlock
-falls back to scanning its immediate sub-directories (depth 1). For each
-sub-directory with a detected stack it asks `Y/N`, then per-target secrets,
-and produces a separate `.devcontainer/` and secrets path for each accepted
-target.
+When airlock detects recognised stacks in immediate sub-directories (depth 1),
+it asks which layout to use before generating files:
+
+- `root`: one `.devcontainer/` at the monorepo root.
+- `subprojects`: one `.devcontainer/` and secrets path per detected sub-project.
+
+In interactive mode, `subprojects` asks `Y/N` for each detected target, then
+per-target secrets. For scripts or CI, pass `--layout root` or
+`--layout subprojects`; explicit `subprojects` accepts all detected targets.
 
 Sub-directories whose name starts with `.` (e.g. `.git`, `.venv`) and the
 standard build/dependency dirs (`node_modules`, `target`, `dist`, `build`,
@@ -156,7 +161,8 @@ Flags:
 
 | Flag | Effect |
 | --- | --- |
-| `--stack <id>` | Force the stack (otherwise auto-detected from manifests, with confirmation). In monorepo mode the flag is rejected — pass a specific PATH instead. |
+| `--stack <id>` | Force the stack (otherwise auto-detected from manifests, with confirmation). Cannot be combined with `--layout subprojects`; use `--layout root` or pass a specific PATH. |
+| `--layout <root\|subprojects>` | Choose whether a detected monorepo gets one root `.devcontainer/` or one per detected sub-project |
 | `--secrets` | Enable secrets and migrate a root-level `.env` to `~/.airlock/<uuid>-<slug>/env` |
 | `--no-secrets` | Disable secrets (useful in non-interactive mode) |
 | `--force` | Overwrite existing `.devcontainer/` directories (preserves the UUID prefix) |
@@ -252,3 +258,16 @@ ln -s ../.env project/.env
 
 In monorepo mode, each sub-directory has its own Dev Container. When a target
 has secrets enabled, that target's container receives its own `/workspace/.env`.
+
+## System packages
+
+airlock disables runtime `apt`/`apt-get` and `sudo` inside generated
+containers via `no-new-privileges`. Add system packages to
+`.devcontainer/Dockerfile` before the `USER` line, then rebuild the container:
+
+```dockerfile
+RUN apt-get update && apt-get install -y --no-install-recommends <package> \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+In VS Code, run `Dev Containers: Rebuild Container`.
