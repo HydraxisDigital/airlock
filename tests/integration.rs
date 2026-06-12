@@ -490,7 +490,11 @@ fn test_cli_new_monorepo_per_target_secrets_end_to_end() {
         std::fs::read_to_string(root.join("backend/.devcontainer/devcontainer.json")).unwrap();
     assert!(frontend_json.contains("\"mounts\""));
     assert!(frontend_json.contains(".airlock"));
-    assert!(!backend_json.contains("\"mounts\""));
+    assert!(backend_json.contains("\"mounts\""));
+    assert!(!backend_json.contains("/run/secrets"));
+    assert!(backend_json.contains("${localEnv:HOME}/.claude"));
+    assert!(backend_json.contains("${localEnv:HOME}/.codex"));
+    assert!(backend_json.contains("${localEnv:HOME}/.gemini"));
     assert!(tmp.path().join(".airlock").exists());
     assert!(!tmp.path().join(".secrets").exists());
 }
@@ -680,6 +684,27 @@ fn test_devcontainer_security_settings() {
                 extension
             );
         }
+
+        let mounts = v["mounts"].as_array().unwrap();
+        let home = match *stack_id {
+            "typescript" | "javascript" | "solidity-ts" => "/home/node",
+            _ => "/home/vscode",
+        };
+        for dir in [".claude", ".codex", ".gemini"] {
+            let expected = format!("source=${{localEnv:HOME}}/{dir},target={home}/{dir},type=bind");
+            assert!(
+                mounts.contains(&serde_json::json!(expected)),
+                "Stack {}: persistent {} mount missing",
+                stack_id,
+                dir
+            );
+        }
+        assert_eq!(
+            v["initializeCommand"],
+            serde_json::json!("mkdir -p ~/.claude ~/.codex ~/.gemini"),
+            "Stack {}: initializeCommand should create persistent host tool dirs",
+            stack_id
+        );
 
         assert_eq!(
             v["customizations"]["vscode"]["settings"]["terminal.integrated.defaultProfile.linux"],

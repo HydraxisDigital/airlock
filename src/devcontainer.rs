@@ -11,6 +11,8 @@ const REQUIRED_VSCODE_EXTENSIONS: [&str; 3] = [
     "Google.geminicodeassist",
 ];
 
+const PERSISTENT_TOOL_DIRS: [&str; 3] = [".claude", ".codex", ".gemini"];
+
 fn docker_name(name: &str) -> String {
     let sanitized: String = name
         .chars()
@@ -23,6 +25,13 @@ fn docker_name(name: &str) -> String {
         })
         .collect();
     sanitized.trim_matches('-').to_string()
+}
+
+fn remote_home(stack_id: &str) -> &'static str {
+    match stack_id {
+        "javascript" | "typescript" | "solidity-ts" => "/home/node",
+        _ => "/home/vscode",
+    }
 }
 
 pub fn build(paths: &ProjectPaths, stack: &StackMeta, needs_secrets: bool) -> String {
@@ -73,8 +82,15 @@ pub fn build(paths: &ProjectPaths, stack: &StackMeta, needs_secrets: bool) -> St
             }
         },
         "remoteEnv": remote_env,
+        "initializeCommand": "mkdir -p ~/.claude ~/.codex ~/.gemini",
         "postCreateCommand": ".devcontainer/post-create.sh"
     });
+
+    let home = remote_home(&stack.id);
+    let mut mounts: Vec<String> = PERSISTENT_TOOL_DIRS
+        .iter()
+        .map(|dir| format!("source=${{localEnv:HOME}}/{dir},target={home}/{dir},type=bind"))
+        .collect();
 
     if needs_secrets {
         // Mount the directory (not the file) so atomic saves on the host don't break the inode reference
@@ -83,8 +99,9 @@ pub fn build(paths: &ProjectPaths, stack: &StackMeta, needs_secrets: bool) -> St
             "source={},target=/run/secrets,type=bind,readonly",
             secrets_dir.display()
         );
-        config["mounts"] = json!([mount]);
+        mounts.push(mount);
     }
+    config["mounts"] = json!(mounts);
 
     // Pretty-print with a header comment
     let json_str = serde_json::to_string_pretty(&config).unwrap();
