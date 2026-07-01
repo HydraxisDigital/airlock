@@ -490,7 +490,11 @@ fn test_cli_new_monorepo_per_target_secrets_end_to_end() {
         std::fs::read_to_string(root.join("backend/.devcontainer/devcontainer.json")).unwrap();
     assert!(frontend_json.contains("\"mounts\""));
     assert!(frontend_json.contains(".airlock"));
-    assert!(!backend_json.contains("\"mounts\""));
+    assert!(backend_json.contains("\"mounts\""));
+    assert!(!backend_json.contains("/run/secrets"));
+    assert!(backend_json.contains("${localEnv:HOME}/.claude"));
+    assert!(backend_json.contains("${localEnv:HOME}/.codex"));
+    assert!(backend_json.contains("${localEnv:HOME}/.gemini"));
     assert!(tmp.path().join(".airlock").exists());
     assert!(!tmp.path().join(".secrets").exists());
 }
@@ -680,6 +684,69 @@ fn test_devcontainer_security_settings() {
                 extension
             );
         }
+
+        let mounts = v["mounts"].as_array().unwrap();
+        let home = match *stack_id {
+            "typescript" | "javascript" | "solidity-ts" => "/home/node",
+            _ => "/home/vscode",
+        };
+        for dir in [".claude", ".codex", ".gemini"] {
+            let expected = format!("source=${{localEnv:HOME}}/{dir},target={home}/{dir},type=bind");
+            assert!(
+                mounts.contains(&serde_json::json!(expected)),
+                "Stack {}: persistent {} mount missing",
+                stack_id,
+                dir
+            );
+        }
+        assert_eq!(
+            v["initializeCommand"],
+            serde_json::json!("mkdir -p ~/.claude ~/.codex ~/.gemini"),
+            "Stack {}: initializeCommand should create persistent host tool dirs",
+            stack_id
+        );
+
+        assert_eq!(
+            v["customizations"]["vscode"]["settings"]["terminal.integrated.defaultProfile.linux"],
+            serde_json::json!("zsh"),
+            "Stack {}: default terminal profile should be zsh",
+            stack_id
+        );
+        assert_eq!(
+            v["customizations"]["vscode"]["settings"]["terminal.integrated.profiles.linux"]["zsh"]
+                ["path"],
+            serde_json::json!("/usr/bin/zsh"),
+            "Stack {}: zsh terminal profile should point to /usr/bin/zsh",
+            stack_id
+        );
+        assert_eq!(
+            v["remoteEnv"]["SHELL"],
+            serde_json::json!("/usr/bin/zsh"),
+            "Stack {}: remote SHELL should be zsh",
+            stack_id
+        );
+
+        let dockerfile = std::fs::read_to_string(dir.join(".devcontainer/Dockerfile")).unwrap();
+        assert!(
+            dockerfile.contains("apt-get install") && dockerfile.contains("zsh"),
+            "Stack {}: Dockerfile should install zsh",
+            stack_id
+        );
+        assert!(
+            dockerfile.contains("chsh -s /usr/bin/zsh"),
+            "Stack {}: Dockerfile should configure zsh as login shell",
+            stack_id
+        );
+        assert!(
+            dockerfile.contains("github.com/ohmyzsh/ohmyzsh.git"),
+            "Stack {}: Dockerfile should install Oh My Zsh",
+            stack_id
+        );
+        assert!(
+            dockerfile.contains("! -f ~/.oh-my-zsh/oh-my-zsh.sh"),
+            "Stack {}: Oh My Zsh install should be idempotent",
+            stack_id
+        );
     }
 }
 
@@ -694,6 +761,28 @@ fn test_post_create_footer_isolation_check() {
     assert!(
         content.contains("/Users"),
         "/Users isolation check must be present"
+    );
+}
+
+#[test]
+fn test_post_create_explains_runtime_apt_disabled() {
+    let (_tmp, dir) = scaffold_stack("minimal");
+    let content = std::fs::read_to_string(dir.join(".devcontainer/post-create.sh")).unwrap();
+    assert!(
+        content.contains("airlock_apt_help"),
+        "post-create should install apt guidance"
+    );
+    assert!(
+        content.contains("~/.zshrc"),
+        "post-create should install shell guidance for zsh"
+    );
+    assert!(
+        content.contains("airlock disables runtime apt/sudo"),
+        "apt guidance should explain why apt is blocked"
+    );
+    assert!(
+        content.contains("Dev Containers: Rebuild Container"),
+        "apt guidance should point to rebuild flow"
     );
 }
 
@@ -964,6 +1053,139 @@ fn test_retrofit_force_preserves_uuid() {
     assert_eq!(
         first_name, second_name,
         "UUID must be preserved across --force"
+    );
+}
+
+#[test]
+fn test_cli_retrofit_monorepo_layout_root_end_to_end() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("crm");
+    std::fs::create_dir_all(project_dir.join("backend")).unwrap();
+    std::fs::write(project_dir.join("backend/pyproject.toml"), "").unwrap();
+    std::fs::create_dir_all(project_dir.join("frontend")).unwrap();
+    std::fs::write(project_dir.join("frontend/package.json"), "{}").unwrap();
+
+    let output = Command::new(airlock_bin())
+        .args([
+            "retrofit",
+            "--layout",
+            "root",
+            "--stack",
+            "minimal",
+            "--no-secrets",
+        ])
+        .arg(&project_dir)
+        .env("AIRLOCK_SKIP_PREREQUISITES", "1")
+        .env("HOME", tmp.path())
+        .env_remove("SECRETS_DIR")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "airlock retrofit failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(project_dir.join(".devcontainer/devcontainer.json").exists());
+    assert!(!project_dir.join("backend/.devcontainer").exists());
+    assert!(!project_dir.join("frontend/.devcontainer").exists());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Open the project folder in VS Code"),
+        "root layout should mention project folder\nstdout:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("Open the subdir"),
+        "root layout must not mention subdir\nstdout:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("Edit secrets"),
+        "--no-secrets should not print secrets next step\nstdout:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn test_cli_retrofit_monorepo_layout_subprojects_end_to_end() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("crm");
+    std::fs::create_dir_all(project_dir.join("backend")).unwrap();
+    std::fs::write(project_dir.join("backend/pyproject.toml"), "").unwrap();
+    std::fs::create_dir_all(project_dir.join("frontend")).unwrap();
+    std::fs::write(project_dir.join("frontend/package.json"), "{}").unwrap();
+
+    let output = Command::new(airlock_bin())
+        .args(["retrofit", "--layout", "subprojects", "--no-secrets"])
+        .arg(&project_dir)
+        .env("AIRLOCK_SKIP_PREREQUISITES", "1")
+        .env("HOME", tmp.path())
+        .env_remove("SECRETS_DIR")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "airlock retrofit failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(!project_dir.join(".devcontainer").exists());
+    assert!(project_dir
+        .join("backend/.devcontainer/devcontainer.json")
+        .exists());
+    assert!(project_dir
+        .join("frontend/.devcontainer/devcontainer.json")
+        .exists());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Open each generated sub-project folder in VS Code"),
+        "subprojects layout should mention sub-project folders\nstdout:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn test_cli_retrofit_subprojects_layout_rejects_stack_end_to_end() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("crm");
+    std::fs::create_dir_all(project_dir.join("backend")).unwrap();
+    std::fs::write(project_dir.join("backend/pyproject.toml"), "").unwrap();
+    std::fs::create_dir_all(project_dir.join("frontend")).unwrap();
+    std::fs::write(project_dir.join("frontend/package.json"), "{}").unwrap();
+
+    let output = Command::new(airlock_bin())
+        .args([
+            "retrofit",
+            "--layout",
+            "subprojects",
+            "--stack",
+            "rust",
+            "--no-secrets",
+        ])
+        .arg(&project_dir)
+        .env("AIRLOCK_SKIP_PREREQUISITES", "1")
+        .env("HOME", tmp.path())
+        .env_remove("SECRETS_DIR")
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "invalid retrofit unexpectedly succeeded\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--stack cannot be used with --layout subprojects"),
+        "unexpected stderr: {}",
+        stderr
     );
 }
 
